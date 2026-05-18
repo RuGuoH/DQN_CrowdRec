@@ -13,3 +13,5 @@ venv/
 ~$*.docx
 .DS_Store
 __MACOSX/
+data/entry/
+data/project/
