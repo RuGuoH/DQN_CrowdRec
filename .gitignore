@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.cache/
+cache/
+outputs/
+runs/
+outputs/
+*.pt
+*.pkl
+.env
+.venv/
+venv/
+~$*.docx
+.DS_Store
+__MACOSX/

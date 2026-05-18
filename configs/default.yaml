@@ -1,0 +1,36 @@
+# 数据路径（相对项目根目录）
+data_dir: data/data
+
+# 与 sample_read_data.py 一致：只使用此日期之后的项目
+min_start_date: "2018-01-01T00:00:00Z"
+
+# entry 分页大小
+page_limit: 24
+
+# 时间划分（按项目 start_date 排序后切分）
+train_ratio: 0.7
+val_ratio: 0.15
+# test_ratio = 1 - train - val
+
+# 调试时可限制加载项目数；null 表示全部
+max_projects: null
+
+# 缓存目录（加速二次加载）
+cache_dir: cache
+
+# 环境
+env:
+  num_candidates: 32
+  hit_reward: 1.0
+  miss_penalty: -0.1
+
+# DQN
+dqn:
+  gamma: 0.99
+  lr: 0.001
+  batch_size: 64
+  buffer_size: 50000
+  hidden_dim: 128
+  model_type: dqn  # dqn | dueling
+  double_dqn: false
+  device: cpu
