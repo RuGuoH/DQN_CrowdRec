@@ -176,7 +176,7 @@ python scripts/run_baselines.py --side worker --split test --max-projects 50
 
 ```python
 include_truth_in_candidates=True
-
+```
 ### 5.2 Cache
 
 - 路径：`cache/dataset_{all|n50}.pkl`，version=2 字典序列化。
@@ -211,32 +211,32 @@ include_truth_in_candidates=True
 2. 改接口（Observation 字段、checkpoint 格式）必须在 `agent.md` 或 PR 说明中**显式通知**其它角色。
 3. 实验结果只认 **`split=test`** 且写入 `runs/baselines/*_test/comparison.csv` 的行。
 
----
+
 
 ## 7. 推荐提示词（复制给 AI）
 
 ### 7.1 新 Agent 入门
 
-```
+
 你正在参与「强化学习大作业 · 众包任务推荐」项目。
 请先阅读仓库根目录 agent.md、README.md，再读你要改的文件。
 目标：课程要求的双端 DQN 推荐；不要偏离 offline RL + 双 MDP 架构。
 改完后运行 agent.md §4.4 中最相关的 smoke/评估命令并汇报结果。
-```
+
 
 ### 7.2 跑全量实验
 
-```
+
 在 agent.md 约束下，使用全量数据（--max-projects 0）完成：
 1) train_worker_dqn 与 train_requester_dqn（episodes≥15）；
 2) test 集 run_baselines（含 best.pt）；
 3) 将 comparison.csv 关键指标总结为 Markdown 表格。
 不要改动 data/data/；记录完整命令与 runs 路径。
-```
+
 
 ### 7.3已删除
 
-```
+
 
 ### 7.4 写报告某节
 
