@@ -234,13 +234,7 @@ include_truth_in_candidates=True
 不要改动 data/data/；记录完整命令与 runs 路径。
 ```
 
-### 7.3 加功能：无 truth 候选消融
-
-```
-阅读 env/worker_env.py 与 env/requester_env.py 的 _build_candidates。
-为 train/eval 脚本增加 --no-truth-in-candidates，传入 EnvConfig.include_truth_in_candidates。
-更新 agent.md §5.1 与 report_outline 消融小节说明。
-跑 50 项目对比 Hit@1 并汇报。
+### 7.3已删除
 
 ```
 
