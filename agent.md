@@ -98,6 +98,7 @@
 - [x] 基线：`random`, `popularity`, `category_match`, `award`（worker）；`worker_quality`, `worker_activity`（requester）
 - [x] `evaluate.py`、`run_baselines.py`
 - [x] 报告大纲 `docs/report_outline.md`
+- [x] `include_truth_in_candidates` 消融（train/eval/baseline 已支持 CLI 开关）
 
 ### 3.2 未完成（优先任务）
 
@@ -105,7 +106,6 @@
 - [ ] 三种 DQN 变体系统对比并填入报告表
 - [ ] **实验报告正文**（PDF/Word）与 **PPT**
 - [ ] 数据分析 EDA 图表写入报告 §2
-- [x] `include_truth_in_candidates` 消融（train/eval/baseline 已支持 CLI 开关）
 - [ ] 学习曲线出图脚本（可从 `metrics.csv` 绘制）
 - [ ] 可选：BC 预训练、TensorBoard、GPU 默认配置
 
