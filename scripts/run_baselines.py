@@ -33,6 +33,11 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=str, default=None, help="可选 DQN best.pt")
     parser.add_argument("--output-dir", type=str, default="runs/baselines")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+    "--no-truth-in-candidates",
+    action="store_true",
+    help="Do not force ground-truth item into candidate set.",
+)
     args = parser.parse_args()
 
     cfg = load_config()
@@ -64,14 +69,19 @@ def main() -> None:
             num_candidates=args.num_candidates,
             max_steps=None if args.max_steps == 0 else args.max_steps,
             seed=args.seed,
+            include_truth_in_candidates=not args.no_truth_in_candidates,
         )
         results.append(r)
         print(
             f"  hit={r['hit_rate']:.4f} reward={r['reward']:.2f} steps={r['steps']}",
             flush=True,
         )
-
-    out_dir = Path(args.output_dir) / f"{args.side}_{args.split}"
+    truth_tag = (
+    "no_truth"
+    if args.no_truth_in_candidates
+    else "with_truth"
+)
+    out_dir = Path(args.output_dir) / f"{args.side}_{args.split}_{truth_tag}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     json_path = out_dir / "comparison.json"
@@ -79,7 +89,7 @@ def main() -> None:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
     csv_path = out_dir / "comparison.csv"
-    fields = ["policy", "hit_rate", "reward", "steps", "hits", "num_events"]
+    fields = ["policy", "hit_rate", "reward", "steps", "hits", "num_events","include_truth_in_candidates"]
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()

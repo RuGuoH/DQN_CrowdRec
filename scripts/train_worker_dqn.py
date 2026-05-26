@@ -31,6 +31,11 @@ def main() -> None:
     parser.add_argument("--log-dir", default="runs/worker")
     parser.add_argument("--save-every", type=int, default=5, help="每 N 个 episode 存一次")
     parser.add_argument("--update-every", type=int, default=4)
+    parser.add_argument(
+    "--no-truth-in-candidates",
+    action="store_true",
+    help="Do not force ground-truth project into candidate set.",
+)
     args = parser.parse_args()
 
     cfg = load_config()
@@ -50,9 +55,10 @@ def main() -> None:
 
     max_steps = None if args.max_steps == 0 else args.max_steps
     env_cfg = EnvConfig(
-        num_candidates=args.num_candidates,
-        max_steps_per_episode=max_steps,
-    )
+    num_candidates=args.num_candidates,
+    max_steps_per_episode=max_steps,
+    include_truth_in_candidates=not args.no_truth_in_candidates,
+)
     train_env = WorkerRecommendationEnv(ds, split="train", config=env_cfg)
     val_env = WorkerRecommendationEnv(ds, split="val", config=env_cfg)
 
@@ -66,8 +72,11 @@ def main() -> None:
         candidate_dim=PROJECT_FEAT_DIM,
     )
     agent = DQNAgent(num_actions=env_cfg.num_candidates, config=dqn_cfg)
-
-    logger = TrainingLogger(log_dir=Path(args.log_dir), run_name="worker_dqn")
+    run_suffix = "no_truth" if args.no_truth_in_candidates else "with_truth"
+    logger = TrainingLogger(
+    log_dir=Path(args.log_dir),
+    run_name=f"worker_dqn_{run_suffix}",
+)
     logger.save_config(
         {
             "side": "worker",

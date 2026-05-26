@@ -22,11 +22,18 @@ def build_env(
     split: SplitName,
     num_candidates: int,
     seed: int,
+    include_truth_in_candidates: bool = True,
 ):
     if side == "worker":
-        cfg = EnvConfig(num_candidates=num_candidates)
+        cfg = EnvConfig(
+    num_candidates=num_candidates,
+    include_truth_in_candidates=include_truth_in_candidates,
+)
         return WorkerRecommendationEnv(ds, split=split, config=cfg, seed=seed)
-    cfg = RequesterEnvConfig(num_candidates=num_candidates)
+    cfg = RequesterEnvConfig(
+    num_candidates=num_candidates,
+    include_truth_in_candidates=include_truth_in_candidates,
+)
     return RequesterRecommendationEnv(ds, split=split, config=cfg, seed=seed)
 
 
@@ -56,8 +63,9 @@ def evaluate_one(
     num_candidates: int,
     max_steps: int | None,
     seed: int,
+    include_truth_in_candidates: bool = True,
 ) -> dict:
-    env = build_env(side, ds, split, num_candidates, seed)
+    env = build_env(side, ds, split, num_candidates, seed,include_truth_in_candidates=include_truth_in_candidates,)
 
     if policy == "dqn":
         if checkpoint is None:
@@ -83,4 +91,5 @@ def evaluate_one(
         "num_events": len(env.events),
         **metrics,
         "evaluated_at": datetime.now().isoformat(),
+        "include_truth_in_candidates": include_truth_in_candidates,
     }

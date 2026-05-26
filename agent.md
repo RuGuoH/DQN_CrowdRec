@@ -98,6 +98,7 @@
 - [x] 基线：`random`, `popularity`, `category_match`, `award`（worker）；`worker_quality`, `worker_activity`（requester）
 - [x] `evaluate.py`、`run_baselines.py`
 - [x] 报告大纲 `docs/report_outline.md`
+- [x] `include_truth_in_candidates` 消融（train/eval/baseline 已支持 CLI 开关）
 
 ### 3.2 未完成（优先任务）
 
@@ -105,7 +106,6 @@
 - [ ] 三种 DQN 变体系统对比并填入报告表
 - [ ] **实验报告正文**（PDF/Word）与 **PPT**
 - [ ] 数据分析 EDA 图表写入报告 §2
-- [ ] `include_truth_in_candidates` 消融（CLI 开关尚未暴露，见 §5.3）
 - [ ] 学习曲线出图脚本（可从 `metrics.csv` 绘制）
 - [ ] 可选：BC 预训练、TensorBoard、GPU 默认配置
 
@@ -171,8 +171,12 @@ python scripts/run_baselines.py --side worker --split test --max-projects 50
 - `category_match` 等基线 Hit@1 **虚高**（子集实验上可达 ~1.0）。
 - DQN 的 Hit@1 相对基线优势可能被低估或对比失真。
 
-**Agent 任务**：若做公平对比，应实现 CLI `--no-truth-in-candidates` 并跑消融；报告中必须说明两种设定。
+-(此行删除)**Agent 任务**：若做公平对比，应实现 CLI `--no-truth-in-candidates` 并跑消融；报告中必须说明两种设定。
+- 训练与评估时，默认会将真实标签强制加入 K 个候选中：
 
+```python
+include_truth_in_candidates=True
+```
 ### 5.2 Cache
 
 - 路径：`cache/dataset_{all|n50}.pkl`，version=2 字典序列化。
@@ -207,37 +211,32 @@ python scripts/run_baselines.py --side worker --split test --max-projects 50
 2. 改接口（Observation 字段、checkpoint 格式）必须在 `agent.md` 或 PR 说明中**显式通知**其它角色。
 3. 实验结果只认 **`split=test`** 且写入 `runs/baselines/*_test/comparison.csv` 的行。
 
----
+
 
 ## 7. 推荐提示词（复制给 AI）
 
 ### 7.1 新 Agent 入门
 
-```
+
 你正在参与「强化学习大作业 · 众包任务推荐」项目。
 请先阅读仓库根目录 agent.md、README.md，再读你要改的文件。
 目标：课程要求的双端 DQN 推荐；不要偏离 offline RL + 双 MDP 架构。
 改完后运行 agent.md §4.4 中最相关的 smoke/评估命令并汇报结果。
-```
+
 
 ### 7.2 跑全量实验
 
-```
+
 在 agent.md 约束下，使用全量数据（--max-projects 0）完成：
 1) train_worker_dqn 与 train_requester_dqn（episodes≥15）；
 2) test 集 run_baselines（含 best.pt）；
 3) 将 comparison.csv 关键指标总结为 Markdown 表格。
 不要改动 data/data/；记录完整命令与 runs 路径。
-```
 
-### 7.3 加功能：无 truth 候选消融
 
-```
-阅读 env/worker_env.py 与 env/requester_env.py 的 _build_candidates。
-为 train/eval 脚本增加 --no-truth-in-candidates，传入 EnvConfig.include_truth_in_candidates。
-更新 agent.md §5.1 与 report_outline 消融小节说明。
-跑 50 项目对比 Hit@1 并汇报。
-```
+### 7.3已删除
+
+
 
 ### 7.4 写报告某节
 

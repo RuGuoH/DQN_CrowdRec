@@ -37,6 +37,11 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=0, help="0=不限制")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default=None)
+    parser.add_argument(
+    "--no-truth-in-candidates",
+    action="store_true",
+    help="Do not force ground-truth item into candidate set.",
+)
     args = parser.parse_args()
 
     baselines = WORKER_BASELINES if args.side == "worker" else REQUESTER_BASELINES
