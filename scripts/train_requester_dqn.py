@@ -32,10 +32,17 @@ def main() -> None:
     parser.add_argument("--save-every", type=int, default=5)
     parser.add_argument("--update-every", type=int, default=4)
     parser.add_argument(
+    "--pretrained",
+    type=str,
+    default=None,
+    help="BC pretrained checkpoint path",
+)
+    parser.add_argument(
     "--no-truth-in-candidates",
     action="store_true",
     help="Do not force ground-truth worker into candidate set.",
 )
+
     args = parser.parse_args()
 
     cfg = load_config()
@@ -73,6 +80,21 @@ def main() -> None:
         candidate_dim=WORKER_FEAT_DIM,
     )
     agent = DQNAgent(num_actions=env_cfg.num_candidates, config=dqn_cfg)
+    if args.pretrained:
+    ckpt = torch.load(
+        args.pretrained,
+        map_location=dqn_cfg.device,
+        weights_only=False,
+    )
+
+    agent.policy_net.load_state_dict(ckpt["policy"])
+
+    agent.sync_target()
+
+    print(
+        f"已加载 BC 预训练权重: {args.pretrained}",
+        flush=True,
+    )
     run_suffix = "no_truth" if args.no_truth_in_candidates else "with_truth"
     logger = TrainingLogger(
     log_dir=Path(args.log_dir),

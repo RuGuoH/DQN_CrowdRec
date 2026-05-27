@@ -99,6 +99,8 @@
 - [x] `evaluate.py`、`run_baselines.py`
 - [x] 报告大纲 `docs/report_outline.md`
 - [x] `include_truth_in_candidates` 消融（train/eval/baseline 已支持 CLI 开关）
+- [x] 学习曲线出图脚本（可从 `metrics.csv` 绘制）
+- [x] BC预训练 `scripts/pretrained_bc.py`
 
 ### 3.2 未完成（优先任务）
 
@@ -106,8 +108,7 @@
 - [ ] 三种 DQN 变体系统对比并填入报告表
 - [ ] **实验报告正文**（PDF/Word）与 **PPT**
 - [ ] 数据分析 EDA 图表写入报告 §2
-- [ ] 学习曲线出图脚本（可从 `metrics.csv` 绘制）
-- [ ] 可选：BC 预训练、TensorBoard、GPU 默认配置
+- [ ] 可选：TensorBoard、GPU 默认配置
 
 ---
 
@@ -158,7 +159,33 @@ python scripts/train_worker_dqn.py --max-projects 50 --episodes 2 --max-steps 20
 
 # 评估
 python scripts/run_baselines.py --side worker --split test --max-projects 50
+
+#消融实验示例
+python scripts/run_baselines.py \
+    --side worker \
+    --split test \
+    --max-projects 50 \
+    --no-truth-in-candidates
+
+# 学习曲线单个 run示例
+python scripts/plot_learning_curve.py \
+    --run-dir runs/worker/worker_dqn_worker_dqn_no_truth_20260523_222938
+
+# 学习曲线多个 run 对比示例
+python scripts/plot_learning_curve.py \
+    --run-dir runs/worker/run1 \
+    --compare-runs runs/worker/run2 runs/worker/run3
+
+#bc预训练示例，worker可以换成requester
+python scripts/pretrained_bc.py \
+    --side worker 
+python scripts/train_worker_dqn.py \
+    --pretrained runs/bc/.../checkpoints/best.pt
+#以上两者请连起来做，否则爆炸
+
+
 ```
+
 
 ---
 
