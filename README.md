@@ -1,20 +1,40 @@
-# 众包任务推荐 · 强化学习大作业
+# 众包任务推荐 · 动态双边 DQN 实验
 
-> **使用 AI 协作**：请先阅读 [agent.md](agent.md)（项目目标、实现现状、Agent 行为标准与提示词模板）。
+> 使用 AI 协作请先阅读 [agent.md](agent.md)。实验报告大纲见 [docs/report_outline.md](docs/report_outline.md)，模型过程记录见 [docs/experiment_process.md](docs/experiment_process.md)。
+
+## 当前主线
+
+本仓库现在以 **动态双边平台仿真** 为主实验：
+
+- worker 到达时，Worker-DQN 从当前开放且未关闭的 project 中推荐 1 个任务。
+- project 收到候选 worker 后，Requester-DQN 决定 `WAIT` 继续等待，或从申请池中选出 winner。
+- project 选出 winner 后关闭；未中标 worker 会被释放并重新进入推荐队列。
+- reward 同时记录 worker 收益、requester 收益、platform 总收益和 project 等候时间成本。
+
+旧的独立 worker/requester 实验仍保留为 legacy 对照入口。
 
 ## 目录结构
 
-```
-├── configs/default.yaml   # 配置
-├── data/data/             # 原始数据（已有）
+```text
 ├── src/
-│   ├── config.py
-│   └── dataset.py         # 数据加载与事件流
-├── env/                   # MDP 环境
-├── models/                # DQN
-├── scripts/               # 训练脚本
-├── cache/                 # 数据缓存（自动生成）
-└── requirements.txt
+│   ├── dataset.py              # 原始 Crowdspring 数据读取、时间划分、缓存
+│   ├── platform_dataset.py     # 动态平台统一事件和 outcome 索引
+│   └── features.py             # worker/project 特征
+├── env/
+│   ├── platform_env.py         # 动态双边联合仿真环境（主线）
+│   ├── worker_env.py           # legacy: 独立参与者侧环境
+│   └── requester_env.py        # legacy: 独立请求者侧环境
+├── models/
+│   ├── dqn.py                  # Vanilla / Dueling / Double DQN
+│   ├── platform_training.py    # 双 agent 异步训练/评估循环
+│   ├── platform_baselines.py   # 动态平台启发式基线
+│   └── training_log.py
+├── scripts/
+│   ├── train_platform_dqn.py
+│   ├── evaluate_platform.py
+│   ├── run_platform_baselines.py
+│   └── train_worker_dqn.py / train_requester_dqn.py / evaluate.py / run_baselines.py  # legacy
+└── runs/
 ```
 
 ## 快速开始
@@ -22,71 +42,59 @@
 ```bash
 pip install -r requirements.txt
 
-# 快速检查（默认加载 50 个项目）
-python -m src.dataset
+# 数据检查
+python -m src.dataset --max-projects 50
 
-# 加载全量（较慢，首次会写 cache）
-python -m src.dataset --max-projects 0
+# 动态平台启发式基线 smoke
+python scripts/run_platform_baselines.py --split train --max-projects 50 --max-steps 100
+
+# 动态平台双 DQN 短训练
+python scripts/train_platform_dqn.py --max-projects 50 --episodes 1 --max-steps 100
+
+# 动态平台 DQN test 评估
+python scripts/evaluate_platform.py --split test --max-projects 0 \
+  --worker-policy dqn \
+  --requester-policy dqn \
+  --worker-checkpoint runs/platform/.../checkpoints/worker_best.pt \
+  --requester-checkpoint runs/platform/.../checkpoints/requester_best.pt
 ```
 
-## 数据 API 示例
+默认主实验不强制把真实标签注入候选集。如需诊断候选集排序上限，可加 `--include-truth-in-candidates`。
 
-```python
-from src.dataset import build_dataset
+## 动态平台 MDP
 
-ds = build_dataset()
-for ev in ds.iter_worker_events("train"):
-    active = ds.active_projects_at(ev.timestamp)
-    ...
+**Worker-DQN**
+
+| 要素 | 定义 |
+|------|------|
+| 状态 | 当前 worker 历史画像 + K 个 active project 动态特征 + mask |
+| 动作 | 从候选 project 中推荐 1 个 |
+| reward | 历史命中、类目/行业匹配、奖金、剩余时间、score、winner/finalist |
+
+**Requester-DQN**
+
+| 要素 | 定义 |
+|------|------|
+| 状态 | 当前 project 动态状态 + 申请池 worker 特征 + mask |
+| 动作 | `WAIT` 或选择 1 个 worker 为 winner |
+| reward | worker quality、score、winner/finalist、匹配度，扣除 project 等候成本 |
+
+输出指标包括：
+
+```text
+worker_hit_rate, requester_hit_rate, worker_reward, requester_reward,
+platform_reward, project_wait_cost, avg_project_wait_days,
+filled_project_rate, winner_quality, rerouted_workers,
+closed_projects, unfilled_projects, steps
 ```
 
-## 环境与 DQN
+## Legacy 对照
+
+以下入口保留用于复现旧实验，但不再作为报告主线：
 
 ```bash
-# 快速验证
-python scripts/smoke_env.py
-python scripts/smoke_requester.py
-
-# 参与者侧训练（日志与 checkpoint 写入 runs/worker/）
 python scripts/train_worker_dqn.py --max-projects 50 --episodes 10
-
-# 请求者侧训练
 python scripts/train_requester_dqn.py --max-projects 50 --episodes 10
-
-# Dueling + Double DQN
-python scripts/train_worker_dqn.py --model dueling --double-dqn
-
-# 评估与基线对比（test 集）
-python scripts/evaluate.py --side worker --split test --policy random --max-projects 50
-python scripts/evaluate.py --side worker --split test --policy dqn \
-  --checkpoint runs/worker/.../checkpoints/best.pt
-
-# 批量跑所有基线（输出 comparison.csv）
 python scripts/run_baselines.py --side worker --split test --max-projects 50
 python scripts/run_baselines.py --side requester --split test --max-projects 50
 ```
-
-实验报告大纲见 [docs/report_outline.md](docs/report_outline.md)。
-
-训练输出目录示例：`runs/worker/worker_dqn_20260518_120000/`
-- `metrics.csv`：每 episode 的 reward / hit_rate / loss
-- `config.json`：超参快照
-- `checkpoints/best.pt`、`ep0005.pt`、`final.pt`
-
-### MDP 概要
-
-**参与者**（`env/worker_env.py`）
-
-| 要素 | 定义 |
-|------|------|
-| 状态 | `worker_feat`(8) + `candidate_feat`(K×10) + `action_mask` |
-| 动作 | 从 K 个候选项目中选一个 |
-| 奖励 | 命中真实投稿项目 + 质量/获奖加成 |
-
-**请求者**（`env/requester_env.py`）
-
-| 要素 | 定义 |
-|------|------|
-| 状态 | `worker_feat` 槽位存项目上下文(10) + `candidate_feat`(K×8) 为 worker |
-| 动作 | 从 K 个候选 worker 中推荐 1 人 |
-| 奖励 | 命中真实投稿 worker + 分数/质量/获奖加成 |

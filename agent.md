@@ -1,7 +1,7 @@
 # Agent 协作指南（强化学习大作业 · 众包任务推荐）
 
 > **读者**：Cursor / 其它 AI Agent、使用 AI 改代码的同学。  
-> **用途**：统一项目目标、实现现状、修改边界与协作方式。人类用户请同时参考 `README.md` 与 `docs/report_outline.md`。
+> **用途**：统一项目目标、实现现状、修改边界与协作方式。人类用户请同时参考 `README.md`、`docs/report_outline.md` 与 `docs/experiment_process.md`。
 
 ---
 
@@ -17,12 +17,14 @@
 | 方法 | **必须使用 DQN 系列**（Vanilla / Double / Dueling） |
 | 数据 | `data/data/`；自行划分 train/val/test；可参考 `sample_read_data.py` |
 | 交付 | 实验报告（流程、设计、结果）+ 分组汇报；截止以课程通知为准 |
+| 模型过程记录 | 必须记录模型实验中遇到的困难，特别是每次模型/实验调整的目的、具体改动、指标变化，以及可能原因 |
 
 ### 1.2 本仓库的实现取向
 
 - **离线强化学习**：用历史 `(state, action, reward, next_state)` 事件流仿真，非在线 API 环境。
-- **双端独立 MDP**：参与者侧、请求者侧各一套环境 + 各训一个 DQN（非多目标单模型）。
+- **动态双边平台主线**：Worker-DQN 推荐 project，Requester-DQN 在同一平台状态中选择 `WAIT` 或 winner；旧双端独立 MDP 仅作 legacy 对照。
 - **工程目标**：可复现训练 → 评估 → 基线对比 → 填报告表格。
+- **模型过程可追溯**：与模型效果相关的困难、调整目的、调整内容、指标变化与原因分析统一写入 `docs/experiment_process.md`；环境配置、依赖安装、路径、缓存、日志目录等工程问题不写入该文件。
 
 ---
 
@@ -41,25 +43,33 @@
 ├── src/
 │   ├── config.py            # 加载 YAML
 │   ├── dataset.py           # 数据加载、划分、事件流、cache v2
-│   └── features.py          # Worker(8维) / Project(10维) 特征
+│   ├── platform_dataset.py  # 动态平台统一事件/outcome 索引
+│   └── features.py          # Worker(12维) / Project(13维) 特征
 ├── env/
-│   ├── worker_env.py        # 参与者 MDP
-│   └── requester_env.py     # 请求者 MDP
+│   ├── platform_env.py      # 动态双边平台 MDP（主线）
+│   ├── worker_env.py        # legacy 参与者 MDP
+│   └── requester_env.py     # legacy 请求者 MDP
 ├── models/
 │   ├── dqn.py               # Q 网络、DQNAgent、checkpoint
-│   ├── baselines.py         # 基线策略
+│   ├── baselines.py         # legacy 基线策略
+│   ├── platform_baselines.py # 动态平台基线
+│   ├── platform_training.py # 双 agent 异步训练/评估
 │   ├── eval_utils.py        # 评估循环
 │   ├── eval_runner.py       # evaluate_one（脚本共用）
 │   ├── train_utils.py       # 训练 episode 循环
 │   └── training_log.py      # CSV/JSON 日志
 ├── scripts/
-│   ├── train_worker_dqn.py
-│   ├── train_requester_dqn.py
+│   ├── train_platform_dqn.py
+│   ├── evaluate_platform.py
+│   ├── run_platform_baselines.py
+│   ├── train_worker_dqn.py      # legacy
+│   ├── train_requester_dqn.py   # legacy
 │   ├── evaluate.py          # 单策略评估
 │   ├── run_baselines.py     # 批量基线 + 可选 DQN
 │   ├── smoke_env.py
 │   └── smoke_requester.py
 ├── docs/report_outline.md   # 实验报告大纲（填结果用）
+├── docs/experiment_process.md # 模型实验过程、困难、调整与原因记录
 ├── cache/                   # dataset_*.pkl（自动生成，可删后重建）
 └── runs/                    # 训练/评估输出（勿提交超大 checkpoint 除非课程要求）
 ```
@@ -77,11 +87,11 @@
 
 | 字段 | 参与者侧 | 请求者侧 |
 |------|----------|----------|
-| `worker_feat` | worker 特征 (8) | **项目上下文** (10) |
-| `candidate_feat` | K 个项目特征 (K×10) | K 个 worker 特征 (K×8) |
+| `worker_feat` | worker 特征 (12) | **项目上下文** (13) |
+| `candidate_feat` | K 个项目特征 (K×13) | K 个 worker 特征 (K×12) |
 | `action_mask` | 合法候选槽位 | 同上 |
 
-请求者侧训练时：`DQNConfig(anchor_dim=10, candidate_dim=8)`；参与者侧：`anchor_dim=8, candidate_dim=10`。
+动态平台中 Worker-DQN 使用 `anchor_dim=12, candidate_dim=13`；Requester-DQN 使用 `anchor_dim=13, candidate_dim=12`，且动作 0 表示 `WAIT`。
 
 ---
 
@@ -97,6 +107,7 @@
 - [x] 训练日志 `metrics.csv`、`config.json`、checkpoint（best/ep/final）
 - [x] 基线：`random`, `popularity`, `category_match`, `award`（worker）；`worker_quality`, `worker_activity`（requester）
 - [x] `evaluate.py`、`run_baselines.py`
+- [x] 动态平台主线：`PlatformDataset`、`PlatformSimulationEnv`、`train_platform_dqn.py`、`evaluate_platform.py`、`run_platform_baselines.py`
 - [x] 报告大纲 `docs/report_outline.md`
 - [x] `include_truth_in_candidates` 消融（train/eval/baseline 已支持 CLI 开关）
 - [x] 学习曲线出图脚本（可从 `metrics.csv` 绘制）
@@ -107,6 +118,7 @@
 - [ ] **全量数据**正式实验（`--max-projects 0`，足够 episode）
 - [ ] 三种 DQN 变体系统对比并填入报告表
 - [ ] **实验报告正文**（PDF/Word）与 **PPT**
+- [ ] 持续维护 `docs/experiment_process.md`，只记录模型相关困难、调整目的、具体改变、指标变化与可能原因
 - [ ] 数据分析 EDA 图表写入报告 §2
 - [ ] 可选：TensorBoard、GPU 默认配置
 
@@ -120,8 +132,9 @@
 2. **小步提交**：单次 PR/任务只解决一个明确问题（如一侧环境、一脚本、一表）。
 3. **可运行验证**：改完后至少运行相关 smoke 或 `evaluate`；全量训练由用户触发。
 4. **不破坏数据**：不修改 `data/data/` 内原始文件；不提交 `cache/`、`runs/` 大文件除非用户要求。
-5. **中文注释适度**：公开 API 与复杂逻辑用简短中文/英文均可；避免冗长注释。
-6. **匹配现有风格**：dataclass 配置、`build_dataset()`、`Observation.to_dict()` 等沿用现有模式。
+5. **记录模型实验过程**：每次训练、评估、消融或影响模型结果解释的调整后，更新 `docs/experiment_process.md`。至少写清模型相关困难/现象、调整目的、具体调整、指标变化、可能原因、后续动作；不要记录环境配置、依赖安装、路径、缓存、日志目录等工程问题。
+6. **中文注释适度**：公开 API 与复杂逻辑用简短中文/英文均可；避免冗长注释。
+7. **匹配现有风格**：dataclass 配置、`build_dataset()`、`Observation.to_dict()` 等沿用现有模式。
 
 ### 4.2 禁止事项
 
@@ -147,27 +160,26 @@
 ### 4.4 测试命令（改代码后）
 
 ```bash
-# 最快：环境 + 网络前向
-python scripts/smoke_env.py
-python scripts/smoke_requester.py
+# 最快：动态平台启发式 smoke
+python scripts/run_platform_baselines.py --split train --max-projects 50 --max-steps 100
 
 # 数据
 python -m src.dataset --max-projects 50
 
-# 短训练
-python scripts/train_worker_dqn.py --max-projects 50 --episodes 2 --max-steps 200
+# 动态平台短训练
+python scripts/train_platform_dqn.py --max-projects 50 --episodes 1 --max-steps 100
 
-# 评估
+# legacy 评估
 python scripts/run_baselines.py --side worker --split test --max-projects 50
 
-#消融实验示例
+# legacy 消融实验示例
 python scripts/run_baselines.py \
     --side worker \
     --split test \
     --max-projects 50 \
     --no-truth-in-candidates
 
-# 学习曲线单个 run示例
+# 学习曲线单个 run 示例
 python scripts/plot_learning_curve.py \
     --run-dir runs/worker/worker_dqn_worker_dqn_no_truth_20260523_222938
 
@@ -176,14 +188,16 @@ python scripts/plot_learning_curve.py \
     --run-dir runs/worker/run1 \
     --compare-runs runs/worker/run2 runs/worker/run3
 
-#bc预训练示例，worker可以换成requester
+# BC 预训练示例，worker 可以换成 requester
 python scripts/pretrained_bc.py \
     --side worker 
 python scripts/train_worker_dqn.py \
     --pretrained runs/bc/.../checkpoints/best.pt
-#以上两者请连起来做，否则爆炸
+# 以上两者请连起来做，否则爆炸
 
-
+# legacy smoke
+python scripts/smoke_env.py
+python scripts/smoke_requester.py
 ```
 
 
@@ -236,7 +250,8 @@ include_truth_in_candidates=True
 
 1. 每 Agent 开工前读取 `agent.md` 与 `runs/*/config.json`（如有）。
 2. 改接口（Observation 字段、checkpoint 格式）必须在 `agent.md` 或 PR 说明中**显式通知**其它角色。
-3. 实验结果只认 **`split=test`** 且写入 `runs/baselines/*_test/comparison.csv` 的行。
+3. 主实验结果只认 **`split=test`** 且写入 `runs/platform_baselines/platform_test_*/comparison.csv` 的行；旧 `runs/baselines/*_test/comparison.csv` 仅作 legacy 对照。
+4. 任何会影响报告解释的模型问题都必须同步写入 `docs/experiment_process.md`，包括奖励设计、状态/动作定义、候选集设定、特征工程、Q 网络结构、DQN 变体、超参、训练不稳定、指标异常等；工程性问题不写入该文件。
 
 
 
@@ -255,10 +270,10 @@ include_truth_in_candidates=True
 
 
 在 agent.md 约束下，使用全量数据（--max-projects 0）完成：
-1) train_worker_dqn 与 train_requester_dqn（episodes≥15）；
-2) test 集 run_baselines（含 best.pt）；
-3) 将 comparison.csv 关键指标总结为 Markdown 表格。
-不要改动 data/data/；记录完整命令与 runs 路径。
+1) train_platform_dqn（episodes≥10，保存 worker_best.pt 和 requester_best.pt）；
+2) test 集 run_platform_baselines（含 DQN checkpoint）；
+3) 将 platform comparison.csv 关键指标总结为 Markdown 表格。
+不要改动 data/data/；记录完整命令与 runs 路径；同时更新 docs/experiment_process.md，说明模型相关困难、调整目的、具体改变、指标变化与可能原因。
 
 
 ### 7.3已删除
@@ -287,12 +302,13 @@ include_truth_in_candidates=True
 
 ```
 □ python -m src.dataset --max-projects 0  # 确认能加载
-□ smoke_env + smoke_requester 通过
+□ run_platform_baselines smoke 通过
 □ 确定 episodes、K、seed、DQN 变体列表
 □ 决定 include_truth 是否做消融
-□ train worker → train requester → run_baselines --checkpoint best.pt
+□ train_platform_dqn → run_platform_baselines --worker-checkpoint/--requester-checkpoint
 □ test 集结果写入 report_outline §4.4 表格
 □ 从 metrics.csv 出学习曲线图
+□ docs/experiment_process.md 已补充本轮模型相关困难、调整、指标变化和原因分析
 ```
 
 ---
@@ -304,6 +320,7 @@ include_truth_in_candidates=True
 | `agent.md`（本文件） | AI Agent、协作规范 |
 | `README.md` | 人类快速命令 |
 | `docs/report_outline.md` | 实验报告结构 |
+| `docs/experiment_process.md` | 模型实验过程、困难、调整目的、指标变化与原因分析 |
 
 **人类同学**：改代码用 AI 时，在对话首条 @ 本文件或粘贴 §7 提示词。  
 **AI Agent**：把本文件当作 Source of Truth；与 `README` 冲突时，以**作业要求**和**本文件 §1、§3** 为准。

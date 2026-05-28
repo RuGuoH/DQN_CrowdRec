@@ -52,7 +52,7 @@ class PopularityPolicy:
 
 
 class CategoryMatchPolicy:
-    """参与者侧：选类目与 worker 主导类目一致的项目。"""
+    """参与者侧：选类目与 worker 历史主类目一致的项目。"""
 
     name = "category_match"
 
@@ -63,10 +63,42 @@ class CategoryMatchPolicy:
         if len(valid) == 0:
             return 0
         assert env._current is not None
-        dom = env.encoder._worker_dom_cat.get(env._current.worker_id, 0)
+        profile = env.encoder.worker_history_profile(
+            env._current.worker_id,
+            env._current.timestamp,
+        )
+        dom = profile.dominant_category
+        if dom is None:
+            return int(valid[0])
         for a in valid:
             pid = env._candidate_ids[a]
             if env.dataset.projects[pid].category == dom:
+                return int(a)
+        return int(valid[0])
+
+
+class IndustryMatchPolicy:
+    """参与者侧：选行业与 worker 历史主行业一致的项目。"""
+
+    name = "industry_match"
+
+    def select_action(self, env: EnvT, obs: Observation) -> int:
+        if not isinstance(env, WorkerRecommendationEnv):
+            raise TypeError("IndustryMatchPolicy 仅用于 worker 环境")
+        valid = np.flatnonzero(obs.action_mask)
+        if len(valid) == 0:
+            return 0
+        assert env._current is not None
+        profile = env.encoder.worker_history_profile(
+            env._current.worker_id,
+            env._current.timestamp,
+        )
+        dom = profile.dominant_industry_id
+        if dom is None:
+            return int(valid[0])
+        for a in valid:
+            pid = env._candidate_ids[a]
+            if env.dataset.projects[pid].industry_id == dom:
                 return int(a)
         return int(valid[0])
 
@@ -133,10 +165,67 @@ class WorkerActivityPolicy:
         return int(best_a)
 
 
+class RequesterCategoryMatchPolicy:
+    """请求者侧：选历史主类目与当前项目类目一致的 worker。"""
+
+    name = "worker_category_match"
+
+    def select_action(self, env: EnvT, obs: Observation) -> int:
+        if not isinstance(env, RequesterRecommendationEnv):
+            raise TypeError("RequesterCategoryMatchPolicy 仅用于 requester 环境")
+        valid = np.flatnonzero(obs.action_mask)
+        if len(valid) == 0:
+            return 0
+        assert env._current is not None
+        project = env.dataset.projects[env._current.project_id]
+
+        best_a = valid[0]
+        best_key = (-1, -1.0)
+        for a in valid:
+            wid = env._candidates[a]
+            profile = env.encoder.worker_history_profile(wid, env._current.timestamp)
+            if profile.dominant_category != project.category:
+                continue
+            key = (profile.past_count, env.dataset.get_worker_quality(wid))
+            if key > best_key:
+                best_key = key
+                best_a = a
+        return int(best_a)
+
+
+class RequesterIndustryMatchPolicy:
+    """请求者侧：选历史主行业与当前项目行业一致的 worker。"""
+
+    name = "worker_industry_match"
+
+    def select_action(self, env: EnvT, obs: Observation) -> int:
+        if not isinstance(env, RequesterRecommendationEnv):
+            raise TypeError("RequesterIndustryMatchPolicy 仅用于 requester 环境")
+        valid = np.flatnonzero(obs.action_mask)
+        if len(valid) == 0:
+            return 0
+        assert env._current is not None
+        project = env.dataset.projects[env._current.project_id]
+
+        best_a = valid[0]
+        best_key = (-1, -1.0)
+        for a in valid:
+            wid = env._candidates[a]
+            profile = env.encoder.worker_history_profile(wid, env._current.timestamp)
+            if profile.dominant_industry_id != project.industry_id:
+                continue
+            key = (profile.past_count, env.dataset.get_worker_quality(wid))
+            if key > best_key:
+                best_key = key
+                best_a = a
+        return int(best_a)
+
+
 WORKER_BASELINES: dict[str, type[Policy]] = {
     "random": RandomPolicy,
     "popularity": PopularityPolicy,
     "category_match": CategoryMatchPolicy,
+    "industry_match": IndustryMatchPolicy,
     "award": AwardPolicy,
 }
 
@@ -144,6 +233,8 @@ REQUESTER_BASELINES: dict[str, type[Policy]] = {
     "random": RandomPolicy,
     "worker_quality": WorkerQualityPolicy,
     "worker_activity": WorkerActivityPolicy,
+    "worker_category_match": RequesterCategoryMatchPolicy,
+    "worker_industry_match": RequesterIndustryMatchPolicy,
 }
 
 

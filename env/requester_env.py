@@ -83,6 +83,10 @@ class RequesterRecommendationEnv:
         self.events = events
         self.encoder = FeatureEncoder(dataset=dataset, ref_time=events[0].timestamp)
         self._worker_ids = sorted(dataset.entries_by_worker.keys())
+        self._workers_by_quality = sorted(
+            self._worker_ids,
+            key=lambda wid: (-dataset.get_worker_quality(wid), wid),
+        )
         self._idx = 0
         self._current: RequesterEvent | None = None
         self._candidates: list[int] = []
@@ -153,32 +157,32 @@ class RequesterRecommendationEnv:
                 active.append(wid)
         return active
 
+    def _is_active_worker(self, worker_id: int, t: datetime) -> bool:
+        times = self.encoder._worker_times.get(worker_id, [])
+        return bool(times and times[0] <= t)
+
     def _build_candidates(self) -> None:
         assert self._current is not None
         ev = self._current
         k = self.config.num_candidates
         truth = ev.worker_id
 
-        active = self._active_workers_at(ev.timestamp)
-        scored = [
-            (
-                wid,
-                self.dataset.get_worker_quality(wid),
-                len(self.encoder._past_entries(wid, ev.timestamp)),
-            )
-            for wid in active
-        ]
-        scored.sort(key=lambda x: (-x[1], -x[2], x[0]))
-
         chosen: list[int] = []
-        if self.config.include_truth_in_candidates and truth in active:
+        if self.config.include_truth_in_candidates and self._is_active_worker(truth, ev.timestamp):
             chosen.append(truth)
 
-        for wid, _, _ in scored:
+        # 请求者侧每步全量扫描 worker 很慢。这里用质量分预排序做候选召回，
+        # 再由 policy / DQN 在 Top-K 候选内排序。
+        for wid in self._workers_by_quality:
             if len(chosen) >= k:
                 break
-            if wid not in chosen:
-                chosen.append(wid)
+            if wid == truth or not self._is_active_worker(wid, ev.timestamp):
+                continue
+            chosen.append(wid)
+
+        if self.config.include_truth_in_candidates and truth in chosen:
+            # 保留真实 worker，但打散槽位，避免模型或基线利用固定候选位置。
+            self.rng.shuffle(chosen)
 
         self._candidates = chosen[:k]
 

@@ -1,279 +1,130 @@
 # 强化学习大作业实验报告大纲
 
-> 课程：强化学习  
-> 题目：基于 DQN 的众包任务推荐  
-> 小组：____（4人）  
-> 日期：2026年6月  
+> 题目：基于 DQN 的动态双边众包任务推荐
+> 主实验：Worker-DQN 任务推荐 + Requester-DQN 动态选人/等待
 
----
+## 摘要
 
-## 摘要（200–300字）
-
-- 研究问题：众包平台如何向参与者推荐任务 / 向请求者匹配 worker
-- 方法：离线历史日志 + MDP 建模 + DQN 系列算法
-- 主要结论：Hit@1、累计 reward；与基线对比的提升幅度
-- 关键词：众包、任务推荐、深度强化学习、DQN
-
----
+- 研究问题：动态变化的 worker 和 project 如何进行双边推荐。
+- 方法：离线历史日志、统一平台事件流、动态联合仿真、两个串行 DQN。
+- 指标：worker hit、requester hit、platform reward、project 等候成本、filled project rate。
 
 ## 1 引言
 
-### 1.1 背景
+- 众包平台中 worker 到达和 project 发布/截止都随时间变化。
+- 平台需要同时兼顾参与者收益和发布者获得高质量稿件的收益。
+- 本文把旧的双端独立候选排序改为一个动态平台仿真：worker 被推荐项目，project 再决定继续等待或选出 winner，未中标 worker 回流。
 
-- 众包平台（Crowdspring）业务流程
-- Amazon MTurk 式「发布任务—参与者选择—完成聚合」
-- 平台需同时兼顾参与者收益与请求者稿件质量
+## 2 数据与统一事件格式
 
-### 1.2 问题定义
-
-- **简化假设**：每次仅推荐 **1** 个任务（参与者侧）或 **1** 个 worker（请求者侧）
-- 两个优化目标：
-  1. 最大化参与者利益（相关任务、更高收益）
-  2. 最大化请求者利益（更多高质量投稿）
-
-### 1.3 本文工作
-
-- 构建双端 MDP 与特征工程
-- 实现 DQN / Double DQN / Dueling DQN
-- 与多种基线对比，给出实验分析与结论
-
----
-
-## 2 数据分析
-
-### 2.1 数据来源
-
-- Crowdspring 数据集字段说明（`project_list.csv`、`worker_quality.csv`、`project/`、`entry/`）
-- 时间范围、过滤条件（`min_start_date >= 2018-01-01`）
-
-### 2.2 描述性统计（需配图/表）
-
-| 统计项 | 数值 |
-|--------|------|
-| 项目数 | |
-| 投稿条目数 | |
-| Worker 数（有质量分） | |
-| 平均每项目投稿数 | |
-| 行业/类目分布 | |
-
-**建议图表**：
-
-- 项目 `start_date` 时间分布直方图
-- `entry_count` / `total_awards` 分布
-- Worker `quality` 分布
-
-### 2.3 训练/验证/测试划分
-
-- **按项目 `start_date` 排序** 后切分：70% / 15% / 15%
-- 说明：避免时间泄漏，符合「用过去预测未来」
-
----
+- 原始数据：`project_list.csv`、`worker_quality.csv`、`project/`、`entry/`。
+- 划分：按 project `start_date` 排序后 70% / 15% / 15%。
+- 新增 `PlatformDataset`：
+  - worker 到达事件：按 `entry_created_at` 排序。
+  - project 状态表：start、deadline、entry_count、奖金、类目、行业。
+  - worker-project outcome：是否历史投稿、score、winner、finalist。
+  - synthetic release event：project 关闭后，未中标 worker 重新进入队列。
 
 ## 3 方法
 
-### 3.1 总体框架
+### 3.1 动态平台流程
 
-```
-历史日志 → 事件流 → MDP 环境 → DQN → 推荐动作
-                ↘ 基线对比
+```text
+worker 到达
+  -> Worker-DQN 推荐 1 个 active project
+  -> worker 进入 project 申请池并暂时不可再推荐
+  -> Requester-DQN 选择 WAIT 或选 winner
+  -> project 选出 winner 后关闭
+  -> 未中标 worker 释放并重新推荐新任务
 ```
 
-### 3.2 参与者侧 MDP（对应作业问题 1）
+### 3.2 Worker-DQN
 
 | 要素 | 定义 |
 |------|------|
-| 状态 \(s_t\) | worker 特征 \(\mathbf{w}\) + K 个候选项目特征矩阵 \(\mathbf{C}\) + mask |
-| 动作 \(a_t\) | \(a \in \{0,\ldots,K-1\}\)，选择推荐项目 |
-| 奖励 \(r_t\) | 命中真实投稿 \(+\,R_{\text{hit}}\)；加分：revision score、winner、finalist；未命中惩罚 |
-| 转移 | 推进至下一条 worker 投稿事件 |
+| 状态 | worker 历史画像 + K 个 active project 动态特征 + mask |
+| 动作 | 推荐 1 个 project |
+| reward | 历史命中、类目/行业匹配、奖金、剩余时间、score、winner/finalist |
 
-**特征向量（写明维度）**：
-
-- Worker（8维）：quality、历史投稿数、均分、胜率、决赛率、主导类目、距上次投稿间隔等
-- Project（10维）：类目、行业、投稿数、奖金、均分、featured、剩余时间等
-
-### 3.3 请求者侧 MDP（对应作业问题 2）
+### 3.3 Requester-DQN
 
 | 要素 | 定义 |
 |------|------|
-| 状态 | 项目上下文（10维）+ K 个 worker 特征（各8维） |
-| 动作 | 推荐 1 名 worker |
-| 奖励 | 命中真实投稿 worker + 质量分 + 分数/获奖加成 |
+| 状态 | project 动态状态 + 申请池 worker 特征 + mask |
+| 动作 | `WAIT` 或选择 1 个 worker 为 winner |
+| reward | worker quality、score、winner/finalist、匹配度，扣除 project 等候成本 |
 
-### 3.4 Q 函数与网络结构
+### 3.4 Q 网络
 
-- \(Q(s,a;\theta)\)：anchor MLP + candidate MLP 拼接后输出 K 维 Q 值
-- **Vanilla DQN**、**Double DQN**（解耦 argmax 与评估）、**Dueling DQN**（\(Q=V+A-\text{mean}(A)\)）
-- 非法动作 mask 为 \(-\infty\)
+- 两个 DQN 共用 `anchor MLP + candidate MLP -> per-action Q` 结构。
+- Worker-DQN：anchor=worker，candidate=project。
+- Requester-DQN：anchor=project，candidate=worker，动作 0 为 `WAIT`。
+- 支持 Vanilla DQN、Double DQN、Dueling DQN。
 
-### 3.5 训练细节
+## 4 实验设置
 
-| 超参数 | 取值 |
-|--------|------|
-| K（候选数） | 32 |
-| \(\gamma\) | 0.99 |
-| 学习率 | 1e-3 |
-| batch size | 32/64 |
-| replay size | 10000 |
-| \(\epsilon\) 衰减 | 1.0 → 0.05 |
-| target 更新频率 | 每 200 步 |
-
-### 3.6 基线方法
-
-**参与者侧**：
-
-| 基线 | 策略 |
-|------|------|
-| Random | 合法动作均匀随机 |
-| Popularity | 选投稿数最多项目 |
-| CategoryMatch | 选与 worker 主导类目一致项目 |
-| Award | 选奖金最高项目 |
-
-**请求者侧**：
-
-| 基线 | 策略 |
-|------|------|
-| Random | 随机 worker |
-| WorkerQuality | 选质量分最高 worker |
-| WorkerActivity | 选历史投稿最多 worker |
-
----
-
-## 4 实验
-
-### 4.1 实验环境
-
-- Python 版本、PyTorch 版本、硬件（CPU/GPU）
-- 代码仓库结构与复现命令（见 README）
-
-### 4.2 复现命令（填入实际路径）
+### 4.1 复现命令
 
 ```bash
-# 数据检查
 python -m src.dataset --max-projects 0
 
-# 训练
-python scripts/train_worker_dqn.py --max-projects 0 --episodes 20
-python scripts/train_requester_dqn.py --max-projects 0 --episodes 20
+python scripts/train_platform_dqn.py --max-projects 0 --episodes 10 --device cuda
 
-# 基线 + 对比
-python scripts/run_baselines.py --side worker --split test --max-projects 0
-python scripts/run_baselines.py --side requester --split test --max-projects 0
+python scripts/run_platform_baselines.py --split test --max-projects 0
 
-# 单模型评估
-python scripts/evaluate.py --side worker --split test --policy dqn \
-  --checkpoint runs/worker/.../checkpoints/best.pt
+python scripts/evaluate_platform.py --split test --max-projects 0 \
+  --worker-policy dqn --requester-policy dqn \
+  --worker-checkpoint runs/platform/.../checkpoints/worker_best.pt \
+  --requester-checkpoint runs/platform/.../checkpoints/requester_best.pt
 ```
 
-### 4.3 评价指标
+### 4.2 指标
 
-- **Hit@1**：推荐是否命中真实 project/worker
-- **Average Reward**：episode 累计奖励 / 步数
-- （可选）NDCG@K、MRR（若扩展多候选排序）
+| 指标 | 含义 |
+|------|------|
+| `worker_hit_rate` | Worker-DQN 推荐 project 是否对应历史投稿 outcome |
+| `requester_hit_rate` | Requester-DQN 选择 worker 是否为历史 winner |
+| `worker_reward` | 参与者侧累计收益 |
+| `requester_reward` | 发布者侧累计收益，不含等待成本 |
+| `platform_reward` | 双边收益扣除 project 等待成本 |
+| `project_wait_cost` | project 从发布到 winner/关闭的等待成本 |
+| `filled_project_rate` | 成功选出 winner 的 project 比例 |
+| `winner_quality` | 被选中 winner 的平均质量 |
+| `rerouted_workers` | 未中标后被重新推荐的 worker 数 |
 
-### 4.4 主实验结果（表 1：test 集）
+### 4.3 基线
 
-**参与者侧**
+| 组合 | Worker 策略 | Requester 策略 |
+|------|-------------|----------------|
+| Random-Wait | random_project | wait_until_deadline |
+| Popularity-Quality | popularity | worker_quality |
+| Category-Category | category_match | worker_category_match |
+| Industry-Industry | industry_match | worker_industry_match |
+| Award-Quality | award | worker_quality |
+| LowWait-Quality | low_wait_project | worker_quality |
+| JointHeuristic | category_match + low_wait_project | worker_quality |
 
-| 方法 | Hit@1 | Avg Reward | 备注 |
-|------|-------|------------|------|
-| Random | | | |
-| Popularity | | | |
-| CategoryMatch | | | |
-| Award | | | |
-| DQN | | | |
-| Double DQN | | | |
-| Dueling DQN | | | |
+### 4.4 结果表
 
-**请求者侧**
+数据来源：`runs/platform_baselines/platform_test_no_truth/comparison.csv` 和 `runs/platform/.../metrics.csv`。
 
-| 方法 | Hit@1 | Avg Reward | 备注 |
-|------|-------|------------|------|
-| Random | | | |
-| WorkerQuality | | | |
-| WorkerActivity | | | |
-| DQN | | | |
-
-> 数据来源：`runs/baselines/{side}_test/comparison.csv`
-
-### 4.5 学习曲线
-
-- 贴 `runs/.../metrics.csv` 绘制的 train/val reward、hit_rate、loss 曲线
-- 分析：是否过拟合、\(\epsilon\) 衰减是否合理
-
-### 4.6 消融实验（可选）
-
-- K = 8 / 16 / 32 对 Hit@1 的影响
-- 是否将真实标签放入候选集（`include_truth_in_candidates`）
-- reward 权重敏感性
-
-### 4.7 案例分析（1–2 个）
-
-- 成功推荐：worker 类目与项目匹配
-- 失败案例：开放项目过少、候选未覆盖真实标签
-
-> **注意**：若候选集始终包含真实标签（`include_truth_in_candidates=True`），CategoryMatch 等启发式可能接近 Hit@1=1，需在报告中说明该设定并补充「不含 truth 的候选集」消融。
-
----
+| 方法 | Worker Hit | Requester Hit | Platform Reward | Wait Cost | Filled Rate | Winner Quality | Rerouted |
+|------|------------|---------------|-----------------|-----------|-------------|----------------|----------|
+| Random-Wait | | | | | | | |
+| Popularity-Quality | | | | | | | |
+| Category-Category | | | | | | | |
+| JointHeuristic | | | | | | | |
+| Platform DQN | | | | | | | |
 
 ## 5 讨论
 
-### 5.1 参与者 vs 请求者目标
-
-- 两套模型独立优化，目标可能冲突
-- 未来：多目标 RL 或加权单目标
-
-### 5.2 离线强化学习的局限
-
-- 分布偏移：行为策略 ≠ 学习策略
-- 可考虑：BC 预训练 + DQN 微调
-
-### 5.3 与作业假设的对应
-
-- 「每次只推荐 1 个任务」如何落实
-- 请求者侧「推荐 worker」的对称解释是否合理
-
----
+- 动态性：候选项目随 start/deadline/closed 状态变化，worker 会因申请池和未中标回流而动态变化。
+- 双边目标：Worker-DQN 与 Requester-DQN 保持各自目标，但通过同一平台状态和 platform reward 互相影响。
+- 离线局限：未观察到的 worker-project 组合只能用 proxy reward，winner/finalist 信号稀疏。
+- legacy 对照：旧 worker/requester 独立实验可用于说明为什么候选集排序不足以回应动态平台要求。
 
 ## 6 结论
 
-- 总结主要发现（3–4 条）
-- 说明 DQN 是否显著优于基线
-- 简要展望
-
----
-
-## 参考文献
-
-1. Mnih et al., Human-level control through deep reinforcement learning, 2015.
-2. van Hasselt et al., Deep Reinforcement Learning with Double Q-learning, 2016.
-3. Wang et al., Dueling Network Architectures for Deep Reinforcement Learning, 2016.
-
----
-
-## 附录
-
-### A 小组成员分工
-
-| 成员 | 负责内容 |
-|------|----------|
-| | 数据、特征 |
-| | 环境、MDP |
-| | 模型、训练 |
-| | 实验、报告 |
-
-### B 关键超参表
-
-（从 `runs/.../config.json` 粘贴）
-
-### C 额外实验截图
-
----
-
-## 汇报 PPT 建议结构（10–15 分钟）
-
-1. 问题与数据（2 min）
-2. MDP 建模示意图（3 min）
-3. 网络与训练（2 min）
-4. 实验结果表 + 曲线（4 min）
-5. 结论与 Q&A（2 min）
+- 总结动态平台 DQN 相比启发式基线的表现。
+- 说明 project 等待成本和 worker 回流机制对结果的影响。
+- 展望：更真实的容量约束、多目标 RL、离线策略评估。
