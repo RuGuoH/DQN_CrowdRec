@@ -128,6 +128,37 @@
   - 对 platform reward 做归一化或按 project 计均值，减少“关闭 project 数量”和“回流 worker 数量”对总 reward 的尺度影响。
   - 若报告需要更平滑的验证曲线，可以固定评估事件子集或增加 episode 数，让验证指标不被少量 winner 命中波动主导。
 
+### 2026-05-29 Platform DQN 完整 episode 全量实验与报告数据
+
+- 目的：按报告正式口径重新从头生成实验数据，不做小数据或步数截断 smoke；补齐数据统计、训练曲线、test 评估和基线对比。
+- 数据与设置：全量数据 `max_projects=0`；动态平台环境；`include_truth_in_candidates=False`；Worker-DQN 与 Requester-DQN 均使用 `Dueling + Double DQN`；`episodes=20`；`max_steps=0`，即每个 episode 完整推进事件直到 train split 内 project 关闭；`epsilon_decay_steps=1000`。
+- 命令：
+  - 数据加载：`C:\Users\17765\.conda\envs\torch\python.exe -m src.dataset --max-projects 0`
+  - 训练：`C:\Users\17765\.conda\envs\torch\python.exe -u scripts\train_platform_dqn.py --max-projects 0 --episodes 20 --max-steps 0 --device cuda --worker-model dueling --requester-model dueling --worker-double-dqn --requester-double-dqn --epsilon-decay-steps 1000 --log-dir runs\report_full_20260529\platform_dqn_full`
+  - 作图：`C:\Users\17765\.conda\envs\torch\python.exe scripts\plot_platform_training.py runs\report_full_20260529\platform_dqn_full\platform_dqn_no_truth_20260529_205032\metrics.csv`
+  - test 评估：`C:\Users\17765\.conda\envs\torch\python.exe scripts\evaluate_platform.py --split test --max-projects 0 --worker-policy dqn --requester-policy dqn --worker-checkpoint runs\report_full_20260529\platform_dqn_full\platform_dqn_no_truth_20260529_205032\checkpoints\worker_best.pt --requester-checkpoint runs\report_full_20260529\platform_dqn_full\platform_dqn_no_truth_20260529_205032\checkpoints\requester_best.pt --output runs\report_full_20260529\platform_dqn_full\platform_dqn_no_truth_20260529_205032\test_eval_best.json`
+  - test 基线：`C:\Users\17765\.conda\envs\torch\python.exe -u scripts\run_platform_baselines.py --split test --max-projects 0 --worker-checkpoint runs\report_full_20260529\platform_dqn_full\platform_dqn_no_truth_20260529_205032\checkpoints\worker_best.pt --requester-checkpoint runs\report_full_20260529\platform_dqn_full\platform_dqn_no_truth_20260529_205032\checkpoints\requester_best.pt --output-dir runs\report_full_20260529\platform_baselines_full`
+- 模型相关困难/现象：
+  - 完整 episode 口径下，train 每轮关闭 1712 个项目，单轮 step 数约 2800 到 3900，显著高于此前 800 步截断设置。
+  - 验证集最高 platform reward 出现在 episode 20，但该轮 `requester_hit_rate=0`，说明总 reward 上升并不等于 requester winner 识别能力同步提升。
+  - `random_project+wait_until_deadline` 在 test 集仍有异常高 platform reward，但伴随大量 rerouted workers、unfilled projects 和等待成本。
+- 调整目的：把报告中的实验表格和曲线统一切换到完整 episode 的正式口径，避免混用 smoke 或截断训练结果。
+- 具体调整：不修改模型结构和 reward；只将训练参数从默认 800 步截断改为 `--max-steps 0`，并重新生成报告所需数据。
+- 指标变化：
+  - 数据统计：`projects=2447`，`entries=186605`，非撤回投稿 `116274`，`workers_with_entries=1753`，`workers_with_quality=1653`，`train_projects=1712`，`val_projects=367`，`test_projects=368`。
+  - 训练集最佳：episode 15，`train_platform_reward=661.9700`，`train_worker_hit_rate=0.0771`，`train_requester_hit_rate=0.0040`。
+  - 验证集最佳：episode 20，`val_platform_reward=242.0326`，`val_worker_hit_rate=0.0574`，`val_requester_hit_rate=0.0000`，`val_rerouted_workers=173`。
+  - test 集 DQN：`platform_reward=265.1064`，`worker_hit_rate=0.05934`，`requester_hit_rate=0.00698`，`winner_quality=0.8499`，`project_wait_cost=1.2482`，`rerouted_workers=205`。
+  - test 正常启发式中最高 platform reward 为 `industry_match+worker_industry_match` 的 `231.4816`；DQN 高于这些正常启发式，但低于异常等待基线 `random_project+wait_until_deadline` 的 `913.5873`。
+- 可能原因：
+  - 完整 episode 使 train reward 中包含完整 project 关闭、等待成本和 worker 回流，reward 尺度较 800 步截断实验明显变大。
+  - DQN 的 test platform reward 提升主要来自更多 worker 回流和累计 worker reward，而不是 requester hit 的显著提升。
+  - `wait_until_deadline` 的异常高 reward 来自等待到 deadline 后释放大量 worker，导致 worker reward 被重复累计；该策略同时产生 `rerouted_workers=4517`、`unfilled_projects=30` 和 `project_wait_cost=137.9128`，业务上不能简单视为最优。
+- 针对本次尝试的改进方向：
+  - 对 platform reward 做按 project 平均或按决策步平均，减少回流次数对累计 reward 的放大。
+  - 单独提高 requester winner 识别能力，例如加入 winner 监督预训练、提高 winner bonus 或增加申请池质量分布特征。
+  - 报告中应同时展示 hit rate、wait cost、unfilled project 和 rerouted workers，避免只按累计 platform reward 排序。
+
 ### 2026-05-22 参与者侧全量 Vanilla DQN 初次训练
 
 - 目的：用全量项目训练参与者侧任务推荐模型，获得一版可用于后续 test 评估和 DQN 变体对比的 worker 侧基准模型。
