@@ -52,6 +52,19 @@ class TrainingLogger:
         self._append_csv(row)
         print(self._format_row(row), flush=True)
 
+    def log_dict(self, row: dict[str, Any]) -> None:
+        row = {**row, "time": datetime.now().isoformat()}
+        self._rows.append(row)
+        self._append_csv(row)
+        print(
+            " ".join(
+                f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}"
+                for k, v in row.items()
+                if k != "time"
+            ),
+            flush=True,
+        )
+
     def _format_row(self, row: dict[str, Any]) -> str:
         loss = row.get("avg_loss")
         loss_s = f"{loss:.4f}" if loss is not None else "n/a"

@@ -175,22 +175,27 @@ class WorkerRecommendationEnv:
         active = self.active_projects_at(ev.timestamp)
         active_by_id = {p.project_id: p for p in active}
 
+        truth_project: ProjectRecord | None = None
         chosen: list[ProjectRecord] = []
         chosen_ids: set[int] = set()
 
         truth = ev.project_id
         if self.config.include_truth_in_candidates and truth in active_by_id:
-            p = active_by_id[truth]
-            chosen.append(p)
+            truth_project = active_by_id[truth]
             chosen_ids.add(truth)
 
         pool = [p for pid, p in active_by_id.items() if pid not in chosen_ids]
         pool.sort(key=lambda p: (-p.entry_count, -p.total_awards, p.project_id))
         for p in pool:
-            if len(chosen) >= k:
+            if len(chosen) >= k - (1 if truth_project is not None else 0):
                 break
             chosen.append(p)
             chosen_ids.add(p.project_id)
+
+        if truth_project is not None:
+            chosen.append(truth_project)
+            # 保留真实项目作为正样本，但打散槽位，避免“真实项目总在第 0 位”的位置泄漏。
+            self.rng.shuffle(chosen)
 
         self._candidates = chosen[:k]
         self._candidate_ids = [p.project_id for p in self._candidates]
