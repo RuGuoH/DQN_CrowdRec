@@ -205,7 +205,13 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=64, help="unused, kept for CLI parity")
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--hidden-dim", type=int, default=256)
+    parser.add_argument(
+        "--extra-hidden-layers",
+        type=int,
+        default=1,
+        help="在旧网络结构基础上额外增加的隐藏层数；需与 DQN 微调保持一致",
+    )
     parser.add_argument("--max-steps", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--log-dir", default="runs/bc_platform")
@@ -240,6 +246,7 @@ def main() -> None:
         hidden_dim=args.hidden_dim,
         anchor_dim=anchor_dim,
         candidate_dim=candidate_dim,
+        extra_hidden_layers=args.extra_hidden_layers,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -310,6 +317,7 @@ def main() -> None:
                             model_type=args.model,
                             device=args.device,
                             hidden_dim=args.hidden_dim,
+                            extra_hidden_layers=args.extra_hidden_layers,
                             anchor_dim=anchor_dim,
                             candidate_dim=candidate_dim,
                         )
@@ -322,7 +330,22 @@ def main() -> None:
             print(f"  -> 保存 {ckpt}", flush=True)
 
     final = logger.checkpoint_path(f"{args.side}_final")
-    torch.save({"policy": model.state_dict()}, final)
+    torch.save(
+        {
+            "policy": model.state_dict(),
+            "config": vars(
+                DQNConfig(
+                    model_type=args.model,
+                    device=args.device,
+                    hidden_dim=args.hidden_dim,
+                    extra_hidden_layers=args.extra_hidden_layers,
+                    anchor_dim=anchor_dim,
+                    candidate_dim=candidate_dim,
+                )
+            ),
+        },
+        final,
+    )
     logger.save_summary()
     print(f"BC 完成: {final}", flush=True)
 

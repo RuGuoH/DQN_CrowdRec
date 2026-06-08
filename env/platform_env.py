@@ -38,6 +38,7 @@ class PlatformEnvConfig:
     award_weight: float = 0.01
     urgency_weight: float = 0.02
     project_wait_penalty: float = 0.05
+    requester_wait_cost_weight: float = 1.0
     include_truth_in_candidates: bool = False
     mixed_recall: bool = True
     max_steps_per_episode: int | None = None
@@ -58,7 +59,13 @@ class PlatformEnvConfig:
     utility_expected_score_weight: float = 0.35
     utility_requester_match_weight: float = 0.15
     utility_activity_weight: float = 0.10
-    legacy_hit_weight: float = 0.10
+    legacy_hit_weight: float = 0.25
+    worker_hit_weight: float | None = None
+    requester_hit_weight: float | None = None
+    requester_finalist_weight: float = 0.0
+    requester_wait_pool_penalty: float = 0.0
+    requester_repeat_wait_penalty: float = 0.0
+    requester_max_waits_per_project: int = 0
 
 
 @dataclass
@@ -71,7 +78,10 @@ class ProjectRuntimeState:
     winner_id: int | None = None
     closed_at: datetime | None = None
     last_wait_accounted_at: datetime | None = None
+    last_requester_decision_at: datetime | None = None
+    last_requester_applicant_count: int = 0
     total_wait_cost: float = 0.0
+    requester_wait_count: int = 0
 
 
 @dataclass
@@ -173,6 +183,9 @@ class PlatformSimulationEnv:
             "requester_recall_opportunities": 0.0,
             "requester_recalls": 0.0,
             "requester_pool_size_sum": 0.0,
+            "requester_waits": 0.0,
+            "requester_waited_projects": 0.0,
+            "requester_wait_count_sum": 0.0,
             "worker_utility_sum": 0.0,
             "requester_utility_sum": 0.0,
         }
@@ -241,6 +254,14 @@ class PlatformSimulationEnv:
             "platform_reward_per_step": self.metrics["platform_reward"] / steps,
             "avg_requester_pool_size": (
                 self.metrics["requester_pool_size_sum"] / requester_steps
+            ),
+            "requester_waits": self.metrics["requester_waits"],
+            "requester_wait_rate": self.metrics["requester_waits"] / requester_steps,
+            "requester_waited_project_rate": (
+                self.metrics["requester_waited_projects"] / closed
+            ),
+            "avg_requester_waits_per_project": (
+                self.metrics["requester_wait_count_sum"] / closed
             ),
             "avg_worker_utility": self.metrics["worker_utility_sum"] / worker_steps,
             "avg_requester_utility": (
@@ -370,10 +391,28 @@ class PlatformSimulationEnv:
             len(self._requester_candidate_worker_ids) > 0
             and self._requester_candidate_worker_ids[0] is None
             and not self._requester_deadline_forced
+            and (
+                self.config.requester_max_waits_per_project <= 0
+                or state.requester_wait_count
+                < self.config.requester_max_waits_per_project
+            )
         )
-        if action == 0 and wait_allowed:
+        is_wait_action = action == 0 and wait_allowed
+        wait_pool_penalty = 0.0
+        wait_repeat_penalty = 0.0
+        if is_wait_action:
             wait_cost = self._apply_wait_cost(pid, self.current_time_or_project_time(pid))
+            wait_pool_penalty = self.config.requester_wait_pool_penalty * float(
+                np.log1p(len(state.applicants))
+            )
+            wait_repeat_penalty = (
+                self.config.requester_repeat_wait_penalty * state.requester_wait_count
+            )
             requester_reward = 0.0
+            if state.requester_wait_count == 0:
+                self.metrics["requester_waited_projects"] += 1.0
+            state.requester_wait_count += 1
+            self.metrics["requester_waits"] += 1.0
         elif 0 <= action < len(self._requester_candidate_worker_ids):
             selected_worker_id = self._requester_candidate_worker_ids[action]
             if selected_worker_id is not None:
@@ -391,10 +430,21 @@ class PlatformSimulationEnv:
                 self._close_project(pid, selected_worker_id)
         else:
             wait_cost = self._apply_wait_cost(pid, self.current_time_or_project_time(pid))
-            requester_reward = self.config.miss_penalty - wait_cost
+            requester_reward = self.config.miss_penalty
 
-        agent_reward = requester_reward - wait_cost
-        platform_reward = requester_reward - wait_cost
+        if selected_worker_id is None:
+            state.last_requester_decision_at = self.current_time_or_project_time(pid)
+            state.last_requester_applicant_count = len(state.applicants)
+
+        requester_wait_penalty = (
+            self.config.requester_wait_cost_weight * wait_cost
+            + wait_pool_penalty
+            + wait_repeat_penalty
+        )
+        requester_reward -= requester_wait_penalty
+
+        agent_reward = requester_reward
+        platform_reward = requester_reward
         self.metrics["requester_decisions"] += 1
         self.metrics["requester_reward"] += requester_reward
         self.metrics["platform_reward"] += platform_reward
@@ -409,13 +459,16 @@ class PlatformSimulationEnv:
             "requester_reward": requester_reward,
             "platform_reward": platform_reward,
             "project_wait_cost": wait_cost,
+            "requester_wait_penalty": requester_wait_penalty,
+            "requester_wait_pool_penalty": wait_pool_penalty,
+            "requester_wait_repeat_penalty": wait_repeat_penalty,
             "hit": requester_hit,
             "worker_hit": False,
             "requester_hit": requester_hit,
             "project_id": pid,
             "worker_id": selected_worker_id,
             "timestamp": self.current_time_or_project_time(pid).isoformat(),
-            "wait": action == 0 and wait_allowed,
+            "wait": is_wait_action,
         }
 
         self._current_requester_project_id = None
@@ -539,6 +592,12 @@ class PlatformSimulationEnv:
             deadline = state.project.deadline
             trigger_at = deadline - buffer_delta
             if trigger_at >= deadline:
+                continue
+            if (
+                state.last_requester_decision_at is not None
+                and trigger_at <= state.last_requester_decision_at
+                and len(state.applicants) <= state.last_requester_applicant_count
+            ):
                 continue
             if before_time is not None and trigger_at > before_time:
                 continue
@@ -763,7 +822,11 @@ class PlatformSimulationEnv:
 
         self._requester_candidate_worker_ids = [None]
         cand_feat[0, -1] = 1.0
-        mask[0] = not self._requester_deadline_forced
+        wait_count_allowed = (
+            self.config.requester_max_waits_per_project <= 0
+            or state.requester_wait_count < self.config.requester_max_waits_per_project
+        )
+        mask[0] = not self._requester_deadline_forced and wait_count_allowed
 
         workers = self._build_requester_worker_pool(project_id, state.applicants, t)
         for wid in workers:
@@ -1009,7 +1072,11 @@ class PlatformSimulationEnv:
         if self.config.reward_mode == "utility":
             reward = utility
             if hit:
-                reward += self.config.legacy_hit_weight
+                reward += (
+                    self.config.worker_hit_weight
+                    if self.config.worker_hit_weight is not None
+                    else self.config.legacy_hit_weight
+                )
         else:
             reward = self._legacy_worker_reward(
                 worker_id,
@@ -1038,7 +1105,13 @@ class PlatformSimulationEnv:
         if self.config.reward_mode == "utility":
             reward = utility
             if hit:
-                reward += self.config.legacy_hit_weight
+                reward += (
+                    self.config.requester_hit_weight
+                    if self.config.requester_hit_weight is not None
+                    else self.config.legacy_hit_weight
+                )
+            elif outcome.finalist:
+                reward += self.config.requester_finalist_weight
         else:
             reward = self._legacy_requester_reward(
                 project_id,
@@ -1072,6 +1145,7 @@ class PlatformSimulationEnv:
         state.closed_at = t
         self.metrics["closed_projects"] += 1
         self.metrics["filled_projects"] += 1
+        self.metrics["requester_wait_count_sum"] += state.requester_wait_count
         self.metrics["winner_quality_sum"] += self.dataset.get_worker_quality(winner_id)
         self.metrics["winner_count"] += 1
 
@@ -1100,6 +1174,7 @@ class PlatformSimulationEnv:
         state.unfilled = True
         state.closed_at = t
         self.metrics["closed_projects"] += 1
+        self.metrics["requester_wait_count_sum"] += state.requester_wait_count
         self.metrics["unfilled_projects"] += 1
 
     def _next_due_project(self, before_time: datetime | None) -> int | None:
@@ -1195,6 +1270,54 @@ def add_platform_env_cli_args(parser: Any) -> None:
     parser.add_argument("--immediate-requester-decision", action="store_true")
     parser.add_argument("--requester-batch-size", type=int, default=8)
     parser.add_argument("--requester-deadline-buffer-hours", type=float, default=24.0)
+    parser.add_argument(
+        "--requester-wait-cost-weight",
+        type=float,
+        default=1.0,
+        help="Requester reward 中等待成本的扣减系数；platform_reward 不再额外扣 wait_cost",
+    )
+    parser.add_argument(
+        "--legacy-hit-weight",
+        type=float,
+        default=0.25,
+        help="utility reward 中历史 hit 的额外 bonus；legacy 模式仍使用 hit_reward",
+    )
+    parser.add_argument(
+        "--worker-hit-weight",
+        type=float,
+        default=None,
+        help="utility reward 中 worker 历史投稿 hit 的额外 bonus；默认沿用 legacy-hit-weight",
+    )
+    parser.add_argument(
+        "--requester-hit-weight",
+        type=float,
+        default=None,
+        help="utility reward 中 requester 历史 winner hit 的额外 bonus；默认沿用 legacy-hit-weight",
+    )
+    parser.add_argument(
+        "--requester-finalist-weight",
+        type=float,
+        default=0.0,
+        help="utility reward 中 requester 选中 finalist 的额外 bonus",
+    )
+    parser.add_argument(
+        "--requester-wait-pool-penalty",
+        type=float,
+        default=0.0,
+        help="Requester WAIT 时按 log1p(applicant_pool_size) 额外扣分",
+    )
+    parser.add_argument(
+        "--requester-repeat-wait-penalty",
+        type=float,
+        default=0.0,
+        help="Requester WAIT 时按该 project 已等待次数额外扣分",
+    )
+    parser.add_argument(
+        "--requester-max-waits-per-project",
+        type=int,
+        default=0,
+        help="单个 project 允许 WAIT 的最大次数；0 表示不限制",
+    )
     parser.add_argument("--no-mixed-recall", action="store_true")
     parser.add_argument(
         "--project-lookahead-hours",
@@ -1224,6 +1347,20 @@ def platform_env_config_from_args(args: Any, **overrides: Any) -> PlatformEnvCon
         requester_batch_size=getattr(args, "requester_batch_size", 8),
         requester_deadline_buffer_hours=getattr(
             args, "requester_deadline_buffer_hours", 24.0
+        ),
+        requester_wait_cost_weight=getattr(args, "requester_wait_cost_weight", 1.0),
+        legacy_hit_weight=getattr(args, "legacy_hit_weight", 0.25),
+        worker_hit_weight=getattr(args, "worker_hit_weight", None),
+        requester_hit_weight=getattr(args, "requester_hit_weight", None),
+        requester_finalist_weight=getattr(args, "requester_finalist_weight", 0.0),
+        requester_wait_pool_penalty=getattr(
+            args, "requester_wait_pool_penalty", 0.0
+        ),
+        requester_repeat_wait_penalty=getattr(
+            args, "requester_repeat_wait_penalty", 0.0
+        ),
+        requester_max_waits_per_project=getattr(
+            args, "requester_max_waits_per_project", 0
         ),
         project_lookahead_hours=(
             0.0

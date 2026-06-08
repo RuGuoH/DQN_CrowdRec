@@ -33,6 +33,15 @@ def _to_tensor(arr: np.ndarray, device: torch.device) -> torch.Tensor:
     return torch.as_tensor(arr, dtype=torch.float32, device=device)
 
 
+def _make_mlp(input_dim: int, hidden_dim: int, num_hidden_layers: int) -> nn.Sequential:
+    layers: list[nn.Module] = []
+    in_dim = input_dim
+    for _ in range(max(1, num_hidden_layers)):
+        layers.extend([nn.Linear(in_dim, hidden_dim), nn.ReLU()])
+        in_dim = hidden_dim
+    return nn.Sequential(*layers)
+
+
 class QNetwork(nn.Module):
     """anchor 向量 + K 个候选向量 -> K 维 Q 值。"""
 
@@ -42,24 +51,16 @@ class QNetwork(nn.Module):
         candidate_dim: int = PROJECT_FEAT_DIM,
         hidden_dim: int = 128,
         num_actions: int = 32,
+        extra_hidden_layers: int = 0,
     ) -> None:
         super().__init__()
         self.num_actions = num_actions
-        self.anchor_mlp = nn.Sequential(
-            nn.Linear(anchor_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-        )
-        self.candidate_mlp = nn.Sequential(
-            nn.Linear(candidate_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-        )
+        depth = 2 + max(0, extra_hidden_layers)
+        head_depth = 1 + max(0, extra_hidden_layers)
+        self.anchor_mlp = _make_mlp(anchor_dim, hidden_dim, depth)
+        self.candidate_mlp = _make_mlp(candidate_dim, hidden_dim, depth)
         self.head = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
+            *_make_mlp(hidden_dim * 2, hidden_dim, head_depth),
             nn.Linear(hidden_dim, 1),
         )
 
@@ -96,25 +97,19 @@ class DuelingQNetwork(nn.Module):
         candidate_dim: int = PROJECT_FEAT_DIM,
         hidden_dim: int = 128,
         num_actions: int = 32,
+        extra_hidden_layers: int = 0,
     ) -> None:
         super().__init__()
         self.num_actions = num_actions
-        self.anchor_mlp = nn.Sequential(
-            nn.Linear(anchor_dim, hidden_dim),
-            nn.ReLU(),
-        )
-        self.candidate_mlp = nn.Sequential(
-            nn.Linear(candidate_dim, hidden_dim),
-            nn.ReLU(),
-        )
+        depth = 1 + max(0, extra_hidden_layers)
+        self.anchor_mlp = _make_mlp(anchor_dim, hidden_dim, depth)
+        self.candidate_mlp = _make_mlp(candidate_dim, hidden_dim, depth)
         self.value_head = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
+            *_make_mlp(hidden_dim * 2, hidden_dim, depth),
             nn.Linear(hidden_dim, 1),
         )
         self.adv_head = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
+            *_make_mlp(hidden_dim * 2, hidden_dim, depth),
             nn.Linear(hidden_dim, 1),
         )
 
@@ -142,6 +137,7 @@ def build_q_network(
     hidden_dim: int = 128,
     anchor_dim: int = WORKER_FEAT_DIM,
     candidate_dim: int = PROJECT_FEAT_DIM,
+    extra_hidden_layers: int = 0,
 ) -> nn.Module:
     if model_type == "dueling":
         return DuelingQNetwork(
@@ -149,12 +145,14 @@ def build_q_network(
             candidate_dim=candidate_dim,
             hidden_dim=hidden_dim,
             num_actions=num_actions,
+            extra_hidden_layers=extra_hidden_layers,
         )
     return QNetwork(
         anchor_dim=anchor_dim,
         candidate_dim=candidate_dim,
         hidden_dim=hidden_dim,
         num_actions=num_actions,
+        extra_hidden_layers=extra_hidden_layers,
     )
 
 
@@ -200,6 +198,7 @@ class DQNConfig:
     epsilon_end: float = 0.05
     epsilon_decay_steps: int = 10_000
     hidden_dim: int = 128
+    extra_hidden_layers: int = 0
     model_type: ModelType = "dqn"
     double_dqn: bool = False
     device: str = "cpu"
@@ -221,6 +220,7 @@ class DQNAgent:
             self.cfg.hidden_dim,
             self.cfg.anchor_dim,
             self.cfg.candidate_dim,
+            self.cfg.extra_hidden_layers,
         ).to(self.device)
         self.target_net = copy.deepcopy(self.policy_net).to(self.device)
         self.target_net.eval()

@@ -418,3 +418,57 @@
   - 调整参与者侧 reward：当前 reward 以命中真实投稿为主，可以加入更贴近参与者利益的 shaping，例如项目奖金、项目质量/平均分、worker 在该类目的历史成功率、截止时间压力等，让模型学习“值得推荐”的任务，而不只是复制历史选择。
   - 加入监督式辅助目标或预训练：在 DQN 更新外增加候选项目 Hit@1 的交叉熵/排序损失，先让网络学会从候选集中识别真实项目，再用 DQN reward 微调，可能缓解早期高 epsilon 和稀疏命中奖励导致的学习慢。
   - 对报告解释要分两套结果：一套说明当前 `include_truth_in_candidates=True` 下是候选集内排序实验，另一套用修正后的候选集和过去信息特征说明更接近真实推荐场景的表现。
+
+### 2026-06-06 Platform DQN 长训与探索策略修正
+
+- 目的：针对现有全量 platform utility 实验中训练轮数偏短、epsilon 尤其是 Worker-DQN 衰减过快、requester hit 稀疏和网络容量偏小的问题，调整默认训练设置，为下一轮正式重训做准备。
+- 数据与设置：本次先分析已有 `runs/` 指标，不重新训练；重点查看 `metrics.csv` 与 `config.json` 中的 episode 数、epsilon、hit、utility、wait cost 和网络配置。
+- 命令：使用本地脚本汇总所有 `runs/**/metrics.csv` 与 `config.json`，重点对比：
+  - `runs/report_full_20260601_platform_utility_full/platform_dqn_full/platform_dqn_utility_no_truth_mixed_20260601_004814`
+  - `runs/report_full_20260601_requester_wait_cost_full/platform_dqn_full/platform_dqn_utility_no_truth_mixed_20260601_141537`
+  - `runs/report_full_20260601_requester_wait_cost_slow_worker_eps/platform_dqn_full/platform_dqn_utility_no_truth_mixed_20260601_150604`
+- 模型相关困难/现象：
+  - 多数正式 run 只有 20 个 episode；在完整 episode 中每轮 worker 更新步数较多，`epsilon_decay_steps=1000` 会让 Worker-DQN 很早降到 `0.01` 或 `0.05`，导致后续几乎只 exploitation。
+  - `report_full_20260601_platform_utility_full` 中第 20 轮 worker/requester epsilon 已到约 `0.0100/0.0538`，验证集 hit 只有 `worker=0.0545`、`requester=0.0111`，best 按 utility 出现在第 10 轮而不是最后一轮。
+  - `report_full_20260601_requester_wait_cost_full` 第 20 轮 worker/requester epsilon 约 `0.0100/0.0506`，验证集 requester hit 仍只有 `0.0055`，说明 requester winner 信号仍然稀疏。
+  - `slow_worker_eps` 把 worker decay 增至 `50000` 后，第 20 轮 worker epsilon 仍约 `0.2686`，验证集 platform_reward 提高到 `1149.90`，但 requester epsilon 仍降到约 `0.0504`，requester hit 只有 `0.0055`，说明只放慢 worker 还不够。
+  - 当前 platform DQN 默认 hidden size 实际仍为 `128`，训练脚本没有暴露 hidden size/层数；对于 32 个候选、双侧 utility 和 WAIT 决策，容量偏保守。
+- 调整目的：
+  - 让探索覆盖更多 episode，避免 20 轮内过早锁死 worker 策略。
+  - 降低学习率，减少长训中 Q 值和 requester WAIT/选人边界的漂移。
+  - 增加网络容量，让 Dueling DQN 能表达 worker-project、project-worker 的交互特征。
+  - 增强 utility reward 中的历史 hit bonus，让 hit 不再只是很弱的诊断信号。
+- 具体调整：
+  - `scripts/train_platform_dqn.py` 默认 `episodes: 30 -> 80`，`lr: 3e-4 -> 1e-4`。
+  - Worker epsilon decay 默认 `50000 -> 120000`；Requester epsilon decay 默认 `8000 -> 40000`；`epsilon_end: 0.05 -> 0.10`。
+  - 新增 `--hidden-dim`、`--worker-hidden-dim`、`--requester-hidden-dim`、`--extra-hidden-layers`、`--worker-extra-hidden-layers`、`--requester-extra-hidden-layers`；platform 训练默认 `hidden_dim=256`、`extra_hidden_layers=1`。
+  - `models/dqn.py` 在保持旧 checkpoint 默认结构兼容的前提下，新增 `extra_hidden_layers`；旧 checkpoint 缺少该字段时仍按原结构加载。
+  - `env/platform_env.py` 将 utility 模式中的 `legacy_hit_weight: 0.10 -> 0.25`，并新增 CLI `--legacy-hit-weight` 便于后续消融。
+  - `scripts/pretrained_platform_bc.py` 同步默认 `hidden_dim=256`、`extra_hidden_layers=1`，避免 BC checkpoint 与新的 DQN 默认结构不匹配。
+  - `validation_score()` 中 hit 项权重提高到 `0.20×worker_hit + 0.40×requester_hit + 0.05×requester_recall@k`，使 best checkpoint 选择更关注 hit 质量。
+- 指标变化：本次为代码与实验方案调整，尚未重新训练；新指标需通过全量 80 episode 训练确认。
+- 可能原因：
+  - 旧实验中 best episode 经常出现在中早期，说明策略在短训内主要受探索日程和早期随机命中影响，不能作为充分收敛结论。
+  - Requester-DQN 的 hit 稀疏来自 winner 样本少、申请池动态变化和 WAIT 动作边界不稳定；仅提高 utility 不一定提升历史 winner 一致性，因此需要更强 hit shaping 与更长探索。
+  - Worker-DQN 候选 project 多且动态回流会改变后续状态，过早降低 epsilon 会让模型在尚未充分比较候选模式前固定在局部策略。
+- 针对本次尝试的改进方向：
+  - 下一轮正式命令建议使用默认长训：`python scripts/train_platform_dqn.py --max-projects 0 --episodes 80 --max-steps 0 --device cuda --reward-mode utility`。
+  - 做至少 3 个 seed；若时间不足，先用 `--episodes 40` 快速比较 `legacy_hit_weight=0.10/0.25/0.50` 与 `requester_epsilon_decay_steps=40000/80000`。
+  - 重训后重点比较 `worker_hit_rate`、`requester_hit_rate`、`avg_worker_utility`、`avg_requester_utility`、`project_wait_cost`、`platform_reward_per_project`，不要只看累计 platform reward。
+
+### 2026-06-06 Platform DQN 全量复跑
+
+- 命令：在 `torch` conda 环境中运行 `python -u scripts\train_platform_dqn.py --max-projects 0 --episodes 80 --max-steps 0 --device cuda --reward-mode utility --log-dir runs\full_trial_waitfix_20260606_20260606_181631`。
+- 环境：`C:\Users\17765\.conda\envs\torch\python.exe`，PyTorch `2.9.1+cu128`。
+- 产物：`runs/full_trial_waitfix_20260606_20260606_181631/platform_dqn_utility_no_truth_mixed_20260606_181656/metrics.csv`，共 160 行指标，包含 80 个 train episode 与 80 个 val episode。
+- 运行中发现的问题：第一次全量复跑在第 22 轮后卡在 validation。原因是 requester 在 buffer 阈值处选择 WAIT 后，同一个 project 会再次以相同 decision time 被 `_next_buffer_requester_project()` 选中，时间没有前进，形成重复 WAIT 决策。
+- 修复：为 `ProjectRuntimeState` 增加 `last_requester_decision_at` 与 `last_requester_applicant_count`；当 requester WAIT 后记录本次 buffer 决策。如果之后 applicant 数没有增加且仍是同一个 buffer 时间点，就跳过该 project，避免无进展循环。
+- 全量结果：
+  - best validation 出现在第 3 轮，当前 `validation_score=3.6841`；`worker_hit=0.06344`，`requester_hit=0.00277`，`avg_worker_utility=0.32540`，`avg_requester_utility=0.65899`，`platform_reward=1148.70`。
+  - 第 80 轮 validation：`validation_score=3.6291`，`worker_hit=0.05344`，`requester_hit=0.00551`，`avg_worker_utility=0.32932`，`avg_requester_utility=0.64738`，`platform_reward=1169.79`，`worker/requester epsilon=0.1000/0.2778`。
+  - 第 80 轮 train：`worker_hit=0.05858`，`requester_hit=0.00531`，`avg_worker_utility=0.31242`，`avg_requester_utility=0.52607`，`platform_reward=3082.41`，`worker/requester epsilon=0.1000/0.2778`。
+- 观察：
+  - 长训和慢 epsilon 后，训练没有再因为探索过早结束而锁死；requester 到第 80 轮仍保留约 `0.2778` epsilon，worker 保留 `0.10`。
+  - 但当前 best validation 仍在早期，第 80 轮没有明显超过第 3 轮，说明只延长训练和增大网络容量还不足以稳定提升 requester 命中。
+  - 若只看累计 `platform_reward` 会误导：例如第 56 轮 validation 的 `platform_reward=2080.34`，但 `avg_requester_utility=0.07480`，平均 requester pool size 达 `64.45`，说明大量 WAIT/大池子会抬高累计 reward 或步数相关指标，却不代表 requester 效用更好。
+  - 后续应优先把 checkpoint 选择和报告指标转向归一化收益、两侧 utility、hit/recall 与 wait cost，而不是单独看累计 platform reward。

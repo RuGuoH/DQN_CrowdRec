@@ -35,7 +35,7 @@ def main() -> None:
         default=0,
         help="0=全量；调试可设 50/100",
     )
-    parser.add_argument("--episodes", type=int, default=30)
+    parser.add_argument("--episodes", type=int, default=80)
     parser.add_argument("--num-project-candidates", type=int, default=32)
     parser.add_argument("--num-worker-candidates", type=int, default=32)
     parser.add_argument("--include-truth-in-candidates", action="store_true")
@@ -43,7 +43,7 @@ def main() -> None:
     add_platform_env_cli_args(parser)
     parser.add_argument("--worker-pretrained", type=str, default=None)
     parser.add_argument("--requester-pretrained", type=str, default=None)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--requester-lr", type=float, default=None)
     parser.add_argument("--worker-replay-batch", type=int, default=64)
     parser.add_argument(
@@ -66,11 +66,11 @@ def main() -> None:
     parser.add_argument(
         "--epsilon-decay-steps",
         type=int,
-        default=15_000,
-        help="worker ε 衰减步数（按梯度更新计）",
+        default=120_000,
+        help="worker ε 衰减步数（按梯度更新计）；全量 episode 下应跨多轮缓慢衰减",
     )
-    parser.add_argument("--requester-epsilon-decay-steps", type=int, default=8_000)
-    parser.add_argument("--epsilon-end", type=float, default=0.01)
+    parser.add_argument("--requester-epsilon-decay-steps", type=int, default=40_000)
+    parser.add_argument("--epsilon-end", type=float, default=0.10)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
         "--max-steps",
@@ -81,6 +81,22 @@ def main() -> None:
     parser.add_argument("--update-every", type=int, default=4)
     parser.add_argument("--save-every", type=int, default=5)
     parser.add_argument("--log-dir", default="runs/platform")
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=256,
+        help="默认 hidden size；可用 worker/requester 专用参数覆盖",
+    )
+    parser.add_argument("--worker-hidden-dim", type=int, default=None)
+    parser.add_argument("--requester-hidden-dim", type=int, default=None)
+    parser.add_argument(
+        "--extra-hidden-layers",
+        type=int,
+        default=1,
+        help="在旧网络结构基础上额外增加的隐藏层数",
+    )
+    parser.add_argument("--worker-extra-hidden-layers", type=int, default=None)
+    parser.add_argument("--requester-extra-hidden-layers", type=int, default=None)
     parser.add_argument("--worker-model", choices=["dqn", "dueling"], default="dueling")
     parser.add_argument("--requester-model", choices=["dqn", "dueling"], default="dueling")
     parser.add_argument(
@@ -124,6 +140,22 @@ def main() -> None:
         else args.requester_replay_buffer
     )
     requester_lr = args.lr if args.requester_lr is None else args.requester_lr
+    worker_hidden_dim = (
+        args.hidden_dim if args.worker_hidden_dim is None else args.worker_hidden_dim
+    )
+    requester_hidden_dim = (
+        args.hidden_dim if args.requester_hidden_dim is None else args.requester_hidden_dim
+    )
+    worker_extra_hidden_layers = (
+        args.extra_hidden_layers
+        if args.worker_extra_hidden_layers is None
+        else args.worker_extra_hidden_layers
+    )
+    requester_extra_hidden_layers = (
+        args.extra_hidden_layers
+        if args.requester_extra_hidden_layers is None
+        else args.requester_extra_hidden_layers
+    )
 
     try:
         from models.dqn import DQNAgent, DQNConfig
@@ -157,6 +189,8 @@ def main() -> None:
         target_update_freq=args.target_update_freq,
         epsilon_decay_steps=args.epsilon_decay_steps,
         epsilon_end=args.epsilon_end,
+        hidden_dim=worker_hidden_dim,
+        extra_hidden_layers=worker_extra_hidden_layers,
         anchor_dim=WORKER_FEAT_DIM,
         candidate_dim=PLATFORM_PROJECT_FEAT_DIM,
     )
@@ -171,6 +205,8 @@ def main() -> None:
         target_update_freq=args.target_update_freq,
         epsilon_decay_steps=args.requester_epsilon_decay_steps,
         epsilon_end=args.epsilon_end,
+        hidden_dim=requester_hidden_dim,
+        extra_hidden_layers=requester_extra_hidden_layers,
         anchor_dim=REQUESTER_CONTEXT_FEAT_DIM,
         candidate_dim=WORKER_FEAT_DIM,
     )
@@ -259,14 +295,16 @@ def main() -> None:
 
 
 def validation_score(metrics: dict) -> float:
-    """utility 模式按平均效用 + 弱 hit/recall 选 checkpoint；legacy 仍参考 hit。"""
+    """utility 模式按效用、hit 和 WAIT 风险选 checkpoint；legacy 仍参考 hit。"""
     if "avg_worker_utility" in metrics:
         return (
             metrics.get("avg_worker_utility", 0.0)
             + 5.0 * metrics.get("avg_requester_utility", 0.0)
-            + 0.05 * metrics.get("worker_hit_rate", 0.0)
-            + 0.10 * metrics.get("requester_hit_rate", 0.0)
-            + 0.02 * metrics.get("requester_recall_at_k", 0.0)
+            + 0.50 * metrics.get("worker_hit_rate", 0.0)
+            + 2.00 * metrics.get("requester_hit_rate", 0.0)
+            - 0.02 * metrics.get("avg_requester_pool_size", 0.0)
+            - 0.001 * metrics.get("requester_decisions", 0.0)
+            - 0.05 * metrics.get("avg_project_wait_days", 0.0)
         )
     return (
         metrics.get("worker_hit_rate", 0.0)

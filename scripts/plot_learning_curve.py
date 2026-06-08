@@ -62,6 +62,75 @@ METRIC_CONFIGS = {
     },
 }
 
+PLATFORM_METRIC_CONFIGS = {
+    "worker_hit_rate": {
+        "ylabel": "Worker Hit@1",
+        "title": "Worker Hit@1 Performance over Episodes",
+        "filename": "worker_hitrate_curve.png",
+    },
+    "requester_hit_rate": {
+        "ylabel": "Requester Hit@1",
+        "title": "Requester Hit@1 Performance over Episodes",
+        "filename": "requester_hitrate_curve.png",
+    },
+    "worker_epsilon": {
+        "ylabel": "Worker Epsilon",
+        "title": "Worker Epsilon Decay Curve",
+        "filename": "worker_epsilon_curve.png",
+    },
+    "requester_epsilon": {
+        "ylabel": "Requester Epsilon",
+        "title": "Requester Epsilon Decay Curve",
+        "filename": "requester_epsilon_curve.png",
+    },
+    "worker_avg_loss": {
+        "ylabel": "Worker Average Loss",
+        "title": "Worker Loss Curve",
+        "filename": "worker_loss_curve.png",
+    },
+    "requester_avg_loss": {
+        "ylabel": "Requester Average Loss",
+        "title": "Requester Loss Curve",
+        "filename": "requester_loss_curve.png",
+    },
+    "validation_score": {
+        "ylabel": "Validation Score",
+        "title": "Validation Score over Episodes",
+        "filename": "validation_score_curve.png",
+    },
+    "avg_worker_utility": {
+        "ylabel": "Worker Utility",
+        "title": "Worker Utility over Episodes",
+        "filename": "worker_utility_curve.png",
+    },
+    "avg_requester_utility": {
+        "ylabel": "Requester Utility",
+        "title": "Requester Utility over Episodes",
+        "filename": "requester_utility_curve.png",
+    },
+    "requester_wait_rate": {
+        "ylabel": "Requester WAIT Rate",
+        "title": "Requester WAIT Rate over Episodes",
+        "filename": "requester_wait_rate_curve.png",
+    },
+    "avg_requester_pool_size": {
+        "ylabel": "Requester Pool Size",
+        "title": "Requester Candidate Pool Size over Episodes",
+        "filename": "requester_pool_size_curve.png",
+    },
+}
+
+TEXT_COLUMNS = {"split", "time"}
+VALIDATION_SCORE_COLUMNS = {
+    "avg_worker_utility",
+    "avg_requester_utility",
+    "worker_hit_rate",
+    "requester_hit_rate",
+    "avg_requester_pool_size",
+    "requester_decisions",
+    "avg_project_wait_days",
+}
+
 
 def smooth_series(series: pd.Series, window: int) -> pd.Series:
     """简单 moving average smoothing。"""
@@ -75,13 +144,16 @@ def load_metrics(run_dir: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"未找到 metrics.csv: {metrics_path}")
 
     df = pd.read_csv(metrics_path)
+    for col in df.columns:
+        if col not in TEXT_COLUMNS:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    add_platform_compatibility_columns(df)
 
     required_cols = {
         "episode",
         "split",
         "reward",
-        "hit_rate",
-        "epsilon",
     }
 
     missing = required_cols - set(df.columns)
@@ -89,6 +161,39 @@ def load_metrics(run_dir: Path) -> pd.DataFrame:
         raise ValueError(f"metrics.csv 缺少字段: {missing}")
 
     return df
+
+
+def add_platform_compatibility_columns(df: pd.DataFrame) -> None:
+    """兼容 platform DQN 的字段命名，不把两侧指标平均成单值。"""
+    if "reward" not in df.columns:
+        if "platform_reward" in df.columns:
+            df["reward"] = df["platform_reward"]
+        elif {"worker_reward", "requester_reward"} <= set(df.columns):
+            df["reward"] = df["worker_reward"].fillna(0.0) + df[
+                "requester_reward"
+            ].fillna(0.0)
+
+    if "validation_score" not in df.columns and VALIDATION_SCORE_COLUMNS <= set(
+        df.columns
+    ):
+        df["validation_score"] = (
+            df["avg_worker_utility"]
+            + 5.0 * df["avg_requester_utility"]
+            + 0.5 * df["worker_hit_rate"]
+            + 2.0 * df["requester_hit_rate"]
+            - 0.02 * df["avg_requester_pool_size"]
+            - 0.001 * df["requester_decisions"]
+            - 0.05 * df["avg_project_wait_days"]
+        )
+
+
+def available_metric_configs(df: pd.DataFrame) -> dict[str, dict[str, str]]:
+    configs = {**METRIC_CONFIGS, **PLATFORM_METRIC_CONFIGS}
+    return {
+        metric: cfg
+        for metric, cfg in configs.items()
+        if metric in df.columns and df[metric].notna().any()
+    }
 
 
 
@@ -99,7 +204,7 @@ def plot_single_metric(
     smooth_window: int,
     run_label: str,
 ) -> None:
-    cfg = METRIC_CONFIGS[metric]
+    cfg = {**METRIC_CONFIGS, **PLATFORM_METRIC_CONFIGS}[metric]
 
     plt.figure(figsize=(7, 4.5))
 
@@ -137,26 +242,40 @@ def plot_combined(
     smooth_window: int,
     run_label: str,
 ) -> None:
-    """绘制 reward + hit_rate 双图。"""
+    """绘制 reward + hit-rate 双图。平台 metrics 会画 worker/requester 两条线。"""
 
     fig, axes = plt.subplots(2, 1, figsize=(7, 8))
 
-    metrics = ["reward", "hit_rate"]
+    metric_groups = [
+        ("reward", ["reward"]),
+        (
+            "hit_rate",
+            [
+                metric
+                for metric in ("hit_rate", "worker_hit_rate", "requester_hit_rate")
+                if metric in df.columns
+            ],
+        ),
+    ]
 
-    for ax, metric in zip(axes, metrics):
-        cfg = METRIC_CONFIGS[metric]
+    for ax, (title_metric, metrics) in zip(axes, metric_groups):
+        cfg = {**METRIC_CONFIGS, **PLATFORM_METRIC_CONFIGS}[title_metric]
 
-        for split in sorted(df["split"].unique()):
-            split_df = df[df["split"] == split].copy()
-            split_df = split_df.dropna(subset=[metric])
+        for metric in metrics:
+            for split in sorted(df["split"].unique()):
+                split_df = df[df["split"] == split].copy()
+                split_df = split_df.dropna(subset=[metric])
 
-            if len(split_df) == 0:
-                continue
+                if len(split_df) == 0:
+                    continue
 
-            x = split_df["episode"]
-            y = smooth_series(split_df[metric], smooth_window)
+                x = split_df["episode"]
+                y = smooth_series(split_df[metric], smooth_window)
 
-            ax.plot(x, y, label=f"{run_label}-{split}")
+                label = f"{run_label}-{split}"
+                if metric != title_metric:
+                    label = f"{label}-{metric}"
+                ax.plot(x, y, label=label)
 
         ax.set_xlabel("Episode")
         ax.set_ylabel(cfg["ylabel"])
@@ -179,7 +298,7 @@ def plot_compare_runs(
 ) -> None:
     """多个 run 对比（默认只比较 train 曲线）。"""
 
-    cfg = METRIC_CONFIGS[metric]
+    cfg = {**METRIC_CONFIGS, **PLATFORM_METRIC_CONFIGS}[metric]
 
     plt.figure(figsize=(7, 4.5))
 
@@ -187,6 +306,8 @@ def plot_compare_runs(
         df = load_metrics(run_dir)
 
         train_df = df[df["split"] == "train"].copy()
+        if metric not in train_df.columns:
+            continue
         train_df = train_df.dropna(subset=[metric])
 
         if len(train_df) == 0:
@@ -251,12 +372,18 @@ def main() -> None:
     )
 
     df = load_metrics(run_dir)
+    metric_configs = available_metric_configs(df)
 
     print(f"读取 metrics: {run_dir / 'metrics.csv'}")
     print(f"输出目录: {output_dir}")
 
-    for metric in METRIC_CONFIGS:
-        save_path = output_dir / METRIC_CONFIGS[metric]["filename"]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    normalized_path = output_dir / "normalized_metrics.csv"
+    df.to_csv(normalized_path, index=False)
+    print(f"已生成: {normalized_path}")
+
+    for metric, cfg in metric_configs.items():
+        save_path = output_dir / cfg["filename"]
 
         plot_single_metric(
             df=df,
@@ -284,7 +411,21 @@ def main() -> None:
 
         compare_output = output_dir / "comparisons"
 
-        for metric in ["reward", "hit_rate", "avg_loss"]:
+        for metric in [
+            "reward",
+            "hit_rate",
+            "worker_hit_rate",
+            "requester_hit_rate",
+            "avg_loss",
+            "worker_avg_loss",
+            "requester_avg_loss",
+            "epsilon",
+            "worker_epsilon",
+            "requester_epsilon",
+            "validation_score",
+        ]:
+            if metric not in metric_configs:
+                continue
             save_path = compare_output / f"compare_{metric}.png"
 
             plot_compare_runs(
